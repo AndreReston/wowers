@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { T } from '../lib/styles';
 import { Field, Modal, Confirm, Notification } from '../components/UI';
 import {
   ROLES, ROLE_META, COURSES, YEAR_LEVELS, SECTIONS, DOCS, STAGES, NEXT_STAGE,
-  STAGE_COLOR, STAGE_ICON, FLOORS, CATEGORIES, CAT_ICON, CAT_COLOR, STATUS_STYLE,
+  STAGE_COLOR, STAGE_ICON, FLOORS, BUILDINGS, CATEGORIES, CAT_ICON, CAT_COLOR, STATUS_STYLE,
   ACADEMIC_YEARS, SEMESTERS, CURRENT_AY, CURRENT_SEMESTER, DAYS, TIME_SLOTS,
   GRADE_COMPONENTS, ATTENDANCE_STATUS, ANN_TARGETS, BOOK_CATEGORIES,
   MAX_BORROW_LIMIT, FINE_PER_DAY, CLEARANCE_OFFICES, FEE_TYPES, PAYMENT_METHODS,
@@ -374,90 +374,434 @@ function UsersModule({ notify }) {
   );
 }
 
-// ─── ROOMS MODULE ────────────────────────────────────────────────────────────
+// ─── ROOMS MODULE — BLUEPRINT HELPERS ────────────────────────────────────────
+
+const _SNAP = 20;
+const _MIN_W = 100;
+const _MIN_H = 60;
+const _CANVAS_W = 1400;
+const _CANVAS_H = 900;
+const _GRID = 20;
+const _BP_STORAGE_KEY = 'schoolos_blueprint_layout';
+
+const CAT_BP_COLOR = {
+  Classroom:      { fill: '#e8f0ff', stroke: '#6b8fd4', label: '#1a3a7c' },
+  Laboratory:     { fill: '#ede8ff', stroke: '#8b7ed4', label: '#2d1a7c' },
+  Library:        { fill: '#e8fff0', stroke: '#6bd4a0', label: '#0f5c3a' },
+  Gym:            { fill: '#fff8e8', stroke: '#d4a96b', label: '#7c4a0f' },
+  'Faculty Room': { fill: '#ffe8f4', stroke: '#d46b9b', label: '#7c0f3f' },
+  'Admin Office': { fill: '#f0f0f0', stroke: '#888',    label: '#333'    },
+  Canteen:        { fill: '#eaffe8', stroke: '#7bd46b', label: '#1f6b0f' },
+  Clinic:         { fill: '#ffe8e8', stroke: '#d46b6b', label: '#7c0f0f' },
+};
+
+const CAT_PHOTO_KW = {
+  Classroom:      'classroom school',
+  Laboratory:     'science laboratory school',
+  Library:        'school library books',
+  Gym:            'school gymnasium',
+  'Faculty Room': 'office faculty room',
+  'Admin Office': 'school administration office',
+  Canteen:        'school cafeteria',
+  Clinic:         'school clinic medical',
+};
+
+function _loadLayout() {
+  try { return JSON.parse(localStorage.getItem(_BP_STORAGE_KEY) || '{}'); } catch { return {}; }
+}
+function _saveLayout(layout) {
+  try { localStorage.setItem(_BP_STORAGE_KEY, JSON.stringify(layout)); } catch {}
+}
+
+// ─── BLUEPRINT CANVAS ─────────────────────────────────────────────────────────
+
+function BlueprintCanvas({ rooms, onRoomClick, activeFloor }) {
+  const [layout, setLayout] = useState(_loadLayout);
+  const [selected, setSelected] = useState(null);
+  const dragRef = useRef(null);
+  const resizeRef = useRef(null);
+
+  useEffect(() => {
+    setLayout(prev => {
+      const next = { ...prev };
+      let changed = false;
+      rooms.forEach((r, i) => {
+        if (!next[r.id]) {
+          next[r.id] = { x: _SNAP + (i % 6) * 200, y: _SNAP + Math.floor(i / 6) * 130, w: 170, h: 90 };
+          changed = true;
+        }
+      });
+      if (changed) _saveLayout(next);
+      return next;
+    });
+  }, [rooms]);
+
+  const snap = v => Math.round(v / _SNAP) * _SNAP;
+
+  const onDragMouseDown = useCallback((e, roomId) => {
+    e.preventDefault(); e.stopPropagation();
+    setSelected(roomId);
+    const startX = e.clientX, startY = e.clientY;
+    const orig = layout[roomId] || { x: 0, y: 0, w: 170, h: 90 };
+    dragRef.current = { roomId, startX, startY, origX: orig.x, origY: orig.y };
+
+    const onMove = me => {
+      if (!dragRef.current) return;
+      const dx = me.clientX - dragRef.current.startX;
+      const dy = me.clientY - dragRef.current.startY;
+      const nx = Math.max(0, Math.min(_CANVAS_W - orig.w, snap(dragRef.current.origX + dx)));
+      const ny = Math.max(0, Math.min(_CANVAS_H - orig.h, snap(dragRef.current.origY + dy)));
+      setLayout(prev => ({ ...prev, [roomId]: { ...prev[roomId], x: nx, y: ny } }));
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      setLayout(prev => { _saveLayout(prev); return prev; });
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [layout]);
+
+  const onResizeMouseDown = useCallback((e, roomId) => {
+    e.preventDefault(); e.stopPropagation();
+    setSelected(roomId);
+    const startX = e.clientX, startY = e.clientY;
+    const orig = layout[roomId] || { x: 0, y: 0, w: 170, h: 90 };
+    resizeRef.current = { roomId, startX, startY, origW: orig.w, origH: orig.h };
+
+    const onMove = me => {
+      if (!resizeRef.current) return;
+      const dx = me.clientX - resizeRef.current.startX;
+      const dy = me.clientY - resizeRef.current.startY;
+      const nw = Math.max(_MIN_W, snap(resizeRef.current.origW + dx));
+      const nh = Math.max(_MIN_H, snap(resizeRef.current.origH + dy));
+      setLayout(prev => ({ ...prev, [roomId]: { ...prev[roomId], w: nw, h: nh } }));
+    };
+    const onUp = () => {
+      resizeRef.current = null;
+      setLayout(prev => { _saveLayout(prev); return prev; });
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [layout]);
+
+  const displayRooms = activeFloor === 'All' ? rooms : rooms.filter(r => r.floor === activeFloor);
+
+  return (
+    <div
+      style={{
+        position: 'relative', width: _CANVAS_W, height: _CANVAS_H,
+        background: '#0f1e35',
+        backgroundImage: `linear-gradient(rgba(100,160,255,0.07) 1px,transparent 1px),linear-gradient(90deg,rgba(100,160,255,0.07) 1px,transparent 1px)`,
+        backgroundSize: `${_GRID}px ${_GRID}px`,
+        borderRadius: 12, overflow: 'hidden',
+        border: '1.5px solid #2a4a7a',
+        boxShadow: '0 8px 40px #00000060',
+        userSelect: 'none',
+      }}
+      onClick={() => setSelected(null)}
+    >
+      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+        <text x="16" y="28" fill="rgba(100,160,255,0.4)" fontSize="11" fontFamily="monospace">N↑</text>
+        <text x="16" y="42" fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace">SCHOOL BLUEPRINT</text>
+        <text x={_CANVAS_W - 12} y={_CANVAS_H - 10} fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace" textAnchor="end">
+          {activeFloor === 'All' ? 'ALL FLOORS' : activeFloor.toUpperCase()}
+        </text>
+      </svg>
+
+      {displayRooms.map(room => {
+        const pos = layout[room.id];
+        if (!pos) return null;
+        const bp = CAT_BP_COLOR[room.category] || CAT_BP_COLOR['Classroom'];
+        const isSelected = selected === room.id;
+        const dot = room.status === 'Available' ? '#4ade80' : room.status === 'Occupied' ? '#f87171' : '#fb923c';
+
+        return (
+          <div
+            key={room.id}
+            style={{
+              position: 'absolute', left: pos.x, top: pos.y, width: pos.w, height: pos.h,
+              background: bp.fill,
+              border: `2px solid ${isSelected ? '#5ba4ff' : bp.stroke}`,
+              borderRadius: 4,
+              boxShadow: isSelected ? '0 0 0 3px #5ba4ff55,0 4px 20px #00000060' : '0 2px 8px #00000040',
+              cursor: 'grab', overflow: 'hidden', display: 'flex', flexDirection: 'column',
+              transition: 'box-shadow 0.15s',
+            }}
+            onMouseDown={e => onDragMouseDown(e, room.id)}
+            onClick={e => { e.stopPropagation(); onRoomClick(room); }}
+          >
+            <div style={{ background: bp.stroke, padding: '3px 6px', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              <span style={{ fontSize: 10, color: '#fff', opacity: 0.85 }}>{CAT_ICON[room.category]}</span>
+              <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {room.name}
+              </span>
+              <div style={{ width: 6, height: 6, borderRadius: 50, background: dot, flexShrink: 0 }} />
+            </div>
+            <div style={{ flex: 1, padding: '4px 6px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={{ fontSize: 9, color: bp.label, fontWeight: 600, opacity: 0.8, letterSpacing: '0.04em' }}>{room.category}</div>
+              {pos.h >= 80 && (
+                <div style={{ fontSize: 8, color: bp.label, opacity: 0.55, marginTop: 2 }}>
+                  {room.seats}/{room.capacity} seats · {room.floor}
+                </div>
+              )}
+            </div>
+            {/* Resize handle */}
+            <div
+              onMouseDown={e => onResizeMouseDown(e, room.id)}
+              onClick={e => e.stopPropagation()}
+              style={{ position: 'absolute', right: 0, bottom: 0, width: 14, height: 14, cursor: 'nwse-resize', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <svg width="8" height="8" viewBox="0 0 8 8">
+                <line x1="2" y1="8" x2="8" y2="2" stroke={bp.stroke} strokeWidth="1.5" />
+                <line x1="5" y1="8" x2="8" y2="5" stroke={bp.stroke} strokeWidth="1.5" />
+              </svg>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── ROOM PHOTO MODAL ─────────────────────────────────────────────────────────
+
+function RoomPhotoModal({ room, onClose, onEdit }) {
+  const [imgErr, setImgErr] = useState(false);
+  const kw = CAT_PHOTO_KW[room.category] || 'school room';
+  const seed = (room.id || room.name || 'room').replace(/-/g, '').slice(0, 8);
+  const photoUrl = `https://source.unsplash.com/800x450/?${encodeURIComponent(kw)}&sig=${seed}`;
+  const fallbackUrl = `https://picsum.photos/seed/${encodeURIComponent(room.name)}/800/450`;
+  const bp = CAT_BP_COLOR[room.category] || CAT_BP_COLOR['Classroom'];
+  const ss = STATUS_STYLE[room.status] || STATUS_STYLE['Available'];
+  const pct = room.capacity > 0 ? Math.round((room.seats / room.capacity) * 100) : 0;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: '#00000080', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem' }}
+    >
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 20, overflow: 'hidden', maxWidth: 680, width: '100%', boxShadow: '0 24px 80px #00000050' }}>
+        {/* Photo */}
+        <div style={{ position: 'relative', height: 260, background: bp.fill, overflow: 'hidden' }}>
+          <img
+            src={imgErr ? fallbackUrl : photoUrl}
+            alt={room.name}
+            onError={() => setImgErr(true)}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+          <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top,#00000088 0%,transparent 60%)' }} />
+          <div style={{ position: 'absolute', bottom: 16, left: 20, right: 20, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#fff', textShadow: '0 2px 8px #00000060' }}>{room.name}</div>
+              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', marginTop: 2 }}>{room.building ? `${room.building} · ` : ''}{room.floor} · {room.category}</div>
+            </div>
+            <span style={{ background: ss.bg, color: ss.color, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 20 }}>{room.status}</span>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.5)', border: 'none', borderRadius: 50, width: 32, height: 32, cursor: 'pointer', color: '#fff', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >✕</button>
+        </div>
+        {/* Details */}
+        <div style={{ padding: '1.25rem 1.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: '1rem' }}>
+            {[['Capacity', room.capacity], ['Current Seats', room.seats], ['Section', room.section !== 'None' ? room.section : '—']].map(([lbl, val]) => (
+              <div key={lbl} style={{ background: '#f9f8f5', borderRadius: 10, padding: '10px 14px' }}>
+                <div style={{ fontSize: 11, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>{lbl}</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#1a1a2e' }}>{val}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#aaa', marginBottom: 4 }}>
+              <span>Occupancy</span>
+              <span style={{ fontWeight: 700, color: pct >= 90 ? '#e94560' : pct >= 60 ? '#a05800' : '#1b4332' }}>{pct}%</span>
+            </div>
+            <div style={{ height: 6, background: '#f0efeb', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${pct}%`, background: pct >= 90 ? '#e94560' : pct >= 60 ? '#ef9f27' : '#1d9e75', borderRadius: 3, transition: 'width 0.5s ease' }} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button onClick={onClose} style={T.btn('ghost')}>Close</button>
+            {onEdit && <button onClick={() => { onEdit(room); onClose(); }} style={T.btn('primary')}>Edit Room</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ROOMS MODULE ─────────────────────────────────────────────────────────────
 
 function RoomsModule({ notify }) {
   const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeFloor, setActiveFloor] = useState("All");
-  const [filterCat, setFilterCat] = useState("All");
-  const [searchQ, setSearchQ] = useState("");
+  const [activeBuilding, setActiveBuilding] = useState('All');
+  const [activeFloor, setActiveFloor] = useState('All');
+  const [filterCat, setFilterCat] = useState('All');
+  const [searchQ, setSearchQ] = useState('');
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ name: "", floor: "Ground Floor", category: "Classroom", capacity: 40, seats: 0, section: "None", status: "Available" });
+  const [selectedRoom, setSelectedRoom] = useState(null);
+  const [view, setView] = useState('list');
+  const [form, setForm] = useState({ name: '', building: BUILDINGS[0], floor: FLOORS[0], category: 'Classroom', capacity: 40, seats: 0, section: 'None', status: 'Available' });
+
+  // Derive the building and floor lists dynamically from actual room data,
+  // falling back to the defaults from constants when no rooms exist yet.
+  const allBuildings = [...new Set([...BUILDINGS, ...rooms.map(r => r.building).filter(Boolean)])].sort();
+  const floorsForBuilding = activeBuilding === 'All'
+    ? [...new Set([...FLOORS, ...rooms.map(r => r.floor).filter(Boolean)])].sort()
+    : [...new Set([...FLOORS, ...rooms.filter(r => r.building === activeBuilding).map(r => r.floor).filter(Boolean)])].sort();
+  const buildingCount = allBuildings.length;
 
   useEffect(() => {
     supabase.from('rooms').select('*').then(({ data }) => { setRooms(data || []); setLoading(false); });
   }, []);
 
-  const { data: users } = useSupabaseQuery('profiles', 'id, name, role', { role: 'Teacher' });
-  const teachers = users || [];
-
   const filtered = rooms.filter(r => {
-    const fl = activeFloor === "All" || r.floor === activeFloor;
-    const ct = filterCat === "All" || r.category === filterCat;
+    const fb = activeBuilding === 'All' || r.building === activeBuilding;
+    const fl = activeFloor === 'All' || r.floor === activeFloor;
+    const ct = filterCat === 'All' || r.category === filterCat;
     const q = r.name.toLowerCase().includes(searchQ.toLowerCase());
-    return fl && ct && q;
+    return fb && fl && ct && q;
   });
 
-  const stats = { total: rooms.length, occupied: rooms.filter(r => r.status === "Occupied").length, available: rooms.filter(r => r.status === "Available").length, maintenance: rooms.filter(r => r.status === "Maintenance").length };
+  const stats = {
+    total: rooms.length,
+    occupied: rooms.filter(r => r.status === 'Occupied').length,
+    available: rooms.filter(r => r.status === 'Available').length,
+    maintenance: rooms.filter(r => r.status === 'Maintenance').length,
+  };
+
+  const openAdd = () => {
+    setForm({ name: '', building: allBuildings[0] || BUILDINGS[0], floor: FLOORS[0], category: 'Classroom', capacity: 40, seats: 0, section: 'None', status: 'Available' });
+    setModal('add');
+  };
+  const openEdit = room => { setForm({ ...room }); setModal('edit'); };
 
   const save = async () => {
     if (!form.name?.trim()) return;
-    if (modal === "add") {
-      const { data } = await supabase.from('rooms').insert({ ...form, capacity: +form.capacity, seats: +form.seats }).select().maybeSingle();
+    if (modal === 'add') {
+      const { data, error } = await supabase.from('rooms').insert({ ...form, capacity: +form.capacity, seats: +form.seats }).select('*').maybeSingle();
+      if (error) {
+        console.error('Room insert error:', error);
+        notify(`Room add failed: ${error.message}`, 'danger');
+        return;
+      }
       if (data) setRooms(p => [...p, data]);
-      notify("Room added.");
+      notify('Room added.');
     } else {
-      const { data } = await supabase.from('rooms').update({ ...form, capacity: +form.capacity, seats: +form.seats }).eq('id', form.id).select().maybeSingle();
+      const { data, error } = await supabase.from('rooms').update({ ...form, capacity: +form.capacity, seats: +form.seats }).eq('id', form.id).select('*').maybeSingle();
+      if (error) {
+        console.error('Room update error:', error);
+        notify(`Room update failed: ${error.message}`, 'danger');
+        return;
+      }
       if (data) setRooms(p => p.map(r => r.id === data.id ? data : r));
-      notify("Room updated.");
+      notify('Room updated.');
     }
     setModal(null);
   };
 
-  const F = (key) => ({ value: form[key] ?? "", onChange: e => setForm(p => ({ ...p, [key]: e.target.value })) });
+  const F = key => ({ value: form[key] ?? '', onChange: e => setForm(p => ({ ...p, [key]: e.target.value })) });
 
   return (
     <div>
+      {/* Add/Edit Modal */}
       {modal && (
-        <Modal title={modal === "add" ? "Add Room" : "Edit Room"} onClose={() => setModal(null)}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div style={{ gridColumn: "1/-1" }}><Field label="Room Name"><input style={T.input} {...F("name")} placeholder="e.g. Room 101" /></Field></div>
-            <Field label="Floor"><select style={{ ...T.select, width: "100%" }} {...F("floor")}>{FLOORS.map(f => <option key={f}>{f}</option>)}</select></Field>
-            <Field label="Category"><select style={{ ...T.select, width: "100%" }} {...F("category")}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></Field>
-            <Field label="Capacity"><input style={T.input} type="number" {...F("capacity")} /></Field>
-            <Field label="Current Seats"><input style={T.input} type="number" {...F("seats")} /></Field>
-            <Field label="Section"><select style={{ ...T.select, width: "100%" }} {...F("section")}>{SECTIONS.map(s => <option key={s}>{s}</option>)}</select></Field>
-            <Field label="Status"><select style={{ ...T.select, width: "100%" }} {...F("status")}>{["Available", "Occupied", "Maintenance"].map(s => <option key={s}>{s}</option>)}</select></Field>
+        <Modal title={modal === 'add' ? 'Add Room' : 'Edit Room'} onClose={() => setModal(null)}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ gridColumn: '1/-1' }}><Field label="Room Name"><input style={T.input} {...F('name')} placeholder="e.g. Room 101" /></Field></div>
+            <Field label="Building">
+              <>
+                <input
+                  style={T.input}
+                  list="building-list"
+                  {...F('building')}
+                  placeholder="e.g. Main Building, Annex"
+                />
+                <datalist id="building-list">
+                  {allBuildings.map(b => <option key={b} value={b} />)}
+                </datalist>
+              </>
+            </Field>
+            <Field label="Floor">
+              <>
+                <input
+                  style={T.input}
+                  list="floor-list"
+                  {...F('floor')}
+                  placeholder="e.g. Ground Floor, 4th Floor"
+                />
+                <datalist id="floor-list">
+                  {FLOORS.map(f => <option key={f} value={f} />)}
+                </datalist>
+              </>
+            </Field>
+            <Field label="Category"><select style={{ ...T.select, width: '100%' }} {...F('category')}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></Field>
+            <Field label="Status"><select style={{ ...T.select, width: '100%' }} {...F('status')}>{['Available', 'Occupied', 'Maintenance'].map(s => <option key={s}>{s}</option>)}</select></Field>
+            <Field label="Capacity"><input style={T.input} type="number" {...F('capacity')} /></Field>
+            <Field label="Current Seats"><input style={T.input} type="number" {...F('seats')} /></Field>
+            <div style={{ gridColumn: '1/-1' }}><Field label="Section"><select style={{ ...T.select, width: '100%' }} {...F('section')}>{SECTIONS.map(s => <option key={s}>{s}</option>)}</select></Field></div>
           </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: "1rem" }}>
-            <button onClick={() => setModal(null)} style={T.btn("ghost")}>Cancel</button>
-            <button onClick={save} style={T.btn("primary")}>Save</button>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: '1rem' }}>
+            <button onClick={() => setModal(null)} style={T.btn('ghost')}>Cancel</button>
+            <button onClick={save} style={T.btn('primary')}>Save</button>
           </div>
         </Modal>
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+      {/* Room Photo Modal */}
+      {selectedRoom && (
+        <RoomPhotoModal room={selectedRoom} onClose={() => setSelectedRoom(null)} onEdit={openEdit} />
+      )}
+
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#1a1a2e" }}>Rooms & Sections</h2>
-          <p style={{ margin: "2px 0 0", fontSize: 13, color: "#aaa" }}>{rooms.length} rooms across {FLOORS.length} floors</p>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#1a1a2e' }}>Rooms & Sections</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 13, color: '#aaa' }}>{rooms.length} rooms · {buildingCount} building{buildingCount !== 1 ? 's' : ''}</p>
         </div>
-        <button onClick={() => { setForm({ name: "", floor: "Ground Floor", category: "Classroom", capacity: 40, seats: 0, section: "None", status: "Available" }); setModal("add"); }} style={T.btn("primary")}>+ Add Room</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', background: '#f5f4f0', borderRadius: 10, padding: 3, gap: 2 }}>
+            {[['list', '☰ List'], ['blueprint', '⬡ Blueprint']].map(([v, lbl]) => (
+              <button key={v} onClick={() => setView(v)} style={{ padding: '6px 14px', borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', background: view === v ? '#1a1a2e' : 'transparent', color: view === v ? '#fff' : '#888' }}>{lbl}</button>
+            ))}
+          </div>
+          <button onClick={openAdd} style={T.btn('primary')}>+ Add Room</button>
+        </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: "1.25rem" }}>
-        {[["Total", stats.total, "#1a1a2e"], ["Available", stats.available, "#1b4332"], ["Occupied", stats.occupied, "#7a1c2e"], ["Maintenance", stats.maintenance, "#7a4500"]].map(([k, v, c]) => (
-          <div key={k} style={{ ...T.card, padding: "1rem" }}>
+      {/* Stats */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: '1.25rem' }}>
+        {[['Total', stats.total, '#1a1a2e'], ['Available', stats.available, '#1b4332'], ['Occupied', stats.occupied, '#7a1c2e'], ['Maintenance', stats.maintenance, '#7a4500']].map(([k, v, c]) => (
+          <div key={k} style={{ ...T.card, padding: '1rem' }}>
             <div style={{ fontSize: 24, fontWeight: 700, color: c }}>{v}</div>
-            <div style={{ fontSize: 12, color: "#aaa", marginTop: 2 }}>{k}</div>
+            <div style={{ fontSize: 12, color: '#aaa', marginTop: 2 }}>{k}</div>
           </div>
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 10, marginBottom: "1rem", flexWrap: "wrap" }}>
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search rooms..." style={{ ...T.input, maxWidth: 220 }} />
-        {["All", ...FLOORS].map(f => (
-          <button key={f} onClick={() => setActiveFloor(f)} style={{ ...T.btn(activeFloor === f ? "primary" : "ghost"), padding: "7px 14px", fontSize: 12 }}>{f}</button>
+        {/* Building filter */}
+        {allBuildings.length > 1 && (
+          <select
+            value={activeBuilding}
+            onChange={e => { setActiveBuilding(e.target.value); setActiveFloor('All'); }}
+            style={T.select}
+          >
+            <option value="All">All buildings</option>
+            {allBuildings.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+        )}
+        {/* Floor filter tabs */}
+        {['All', ...floorsForBuilding].map(f => (
+          <button key={f} onClick={() => setActiveFloor(f)} style={{ ...T.btn(activeFloor === f ? 'primary' : 'ghost'), padding: '7px 14px', fontSize: 12 }}>{f}</button>
         ))}
         <select value={filterCat} onChange={e => setFilterCat(e.target.value)} style={T.select}>
           <option value="All">All categories</option>
@@ -465,44 +809,80 @@ function RoomsModule({ notify }) {
         </select>
       </div>
 
-      <div style={{ ...T.card, padding: 0, overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid #f0efeb" }}>
-              {["Room", "Floor", "Category", "Section", "Capacity", "Status", ""].map(h => (
-                <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#aaa", textTransform: "uppercase", letterSpacing: "0.07em" }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(r => {
-              const cc = CAT_COLOR[r.category] || CAT_COLOR["Classroom"];
-              const pct = r.capacity > 0 ? Math.round((r.seats / r.capacity) * 100) : 0;
-              return (
-                <tr key={r.id} style={{ borderBottom: "1px solid #f9f8f5" }}>
-                  <td style={{ padding: "10px 12px", fontWeight: 600 }}><span style={{ marginRight: 8, color: cc.color }}>{CAT_ICON[r.category]}</span>{r.name}</td>
-                  <td style={{ padding: "10px 12px", color: "#aaa", fontSize: 12 }}>{r.floor}</td>
-                  <td style={{ padding: "10px 12px" }}><span style={T.pill(cc.bg, cc.color, cc.border)}>{r.category}</span></td>
-                  <td style={{ padding: "10px 12px", color: r.section !== "None" ? "#1565c0" : "#ccc", fontSize: 12 }}>{r.section}</td>
-                  <td style={{ padding: "10px 12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: pct >= 90 ? "#e94560" : pct >= 60 ? "#a05800" : "#1b4332" }}>{r.seats}/{r.capacity}</span>
-                      <div style={{ width: 40, height: 3, background: "#f0efeb", borderRadius: 2, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${pct}%`, background: pct >= 90 ? "#e94560" : pct >= 60 ? "#ef9f27" : "#1d9e75" }} />
+      {/* LIST VIEW */}
+      {view === 'list' && (
+        <div style={{ ...T.card, padding: 0, overflow: 'hidden' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid #f0efeb' }}>
+                {['Room', 'Building', 'Floor', 'Category', 'Section', 'Capacity', 'Status', ''].map(h => (
+                  <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(r => {
+                const cc = CAT_COLOR[r.category] || CAT_COLOR['Classroom'];
+                const pct = r.capacity > 0 ? Math.round((r.seats / r.capacity) * 100) : 0;
+                return (
+                  <tr key={r.id} style={{ borderBottom: '1px solid #f9f8f5', cursor: 'pointer' }} onClick={() => setSelectedRoom(r)}>
+                    <td style={{ padding: '10px 12px', fontWeight: 600 }}><span style={{ marginRight: 8, color: cc.color }}>{CAT_ICON[r.category]}</span>{r.name}</td>
+                    <td style={{ padding: '10px 12px', color: '#666', fontSize: 12 }}>{r.building || '—'}</td>
+                    <td style={{ padding: '10px 12px', color: '#aaa', fontSize: 12 }}>{r.floor}</td>
+                    <td style={{ padding: '10px 12px' }}><span style={T.pill(cc.bg, cc.color, cc.border)}>{r.category}</span></td>
+                    <td style={{ padding: '10px 12px', color: r.section !== 'None' ? '#1565c0' : '#ccc', fontSize: 12 }}>{r.section}</td>
+                    <td style={{ padding: '10px 12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 12, color: pct >= 90 ? '#e94560' : pct >= 60 ? '#a05800' : '#1b4332' }}>{r.seats}/{r.capacity}</span>
+                        <div style={{ width: 40, height: 3, background: '#f0efeb', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: pct >= 90 ? '#e94560' : pct >= 60 ? '#ef9f27' : '#1d9e75' }} />
+                        </div>
                       </div>
-                    </div>
-                  </td>
-                  <td style={{ padding: "10px 12px" }}><span style={T.pill(STATUS_STYLE[r.status].bg, STATUS_STYLE[r.status].color)}>{r.status}</span></td>
-                  <td style={{ padding: "10px 12px" }}>
-                    <button onClick={() => { setForm({ ...r }); setModal("edit"); }} style={{ ...T.btn("ghost"), padding: "3px 8px", fontSize: 11 }}>Edit</button>
-                  </td>
-                </tr>
+                    </td>
+                    <td style={{ padding: '10px 12px' }}><span style={T.pill(STATUS_STYLE[r.status].bg, STATUS_STYLE[r.status].color)}>{r.status}</span></td>
+                    <td style={{ padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
+                      <button onClick={() => openEdit(r)} style={{ ...T.btn('ghost'), padding: '3px 8px', fontSize: 11 }}>Edit</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {filtered.length === 0 && <p style={{ textAlign: 'center', color: '#bbb', padding: '2rem', fontSize: 13 }}>No rooms match.</p>}
+        </div>
+      )}
+
+      {/* BLUEPRINT VIEW */}
+      {view === 'blueprint' && (
+        <div>
+          {/* Legend */}
+          <div style={{ ...T.card, marginBottom: '1rem', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Legend</span>
+            {CATEGORIES.map(cat => {
+              const bp = CAT_BP_COLOR[cat] || CAT_BP_COLOR['Classroom'];
+              return (
+                <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: 2, background: bp.fill, border: `1.5px solid ${bp.stroke}` }} />
+                  <span style={{ fontSize: 11, color: '#555' }}>{cat}</span>
+                </div>
               );
             })}
-          </tbody>
-        </table>
-        {filtered.length === 0 && <p style={{ textAlign: "center", color: "#bbb", padding: "2rem", fontSize: 13 }}>No rooms match.</p>}
-      </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 12 }}>
+              {[['#4ade80', 'Available'], ['#f87171', 'Occupied'], ['#fb923c', 'Maintenance']].map(([col, lbl]) => (
+                <div key={lbl} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 50, background: col }} />
+                  <span style={{ fontSize: 11, color: '#555' }}>{lbl}</span>
+                </div>
+              ))}
+            </div>
+            <span style={{ fontSize: 11, color: '#aaa', fontStyle: 'italic' }}>Drag · Resize corner · Click to view</span>
+          </div>
+          {/* Canvas */}
+          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 620, borderRadius: 12 }}>
+            <BlueprintCanvas rooms={activeBuilding === 'All' ? rooms : rooms.filter(r => r.building === activeBuilding)} activeFloor={activeFloor} onRoomClick={setSelectedRoom} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

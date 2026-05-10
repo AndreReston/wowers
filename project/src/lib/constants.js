@@ -31,7 +31,13 @@ export const STAGE_COLOR = {
 };
 export const STAGE_ICON = { "Applicant": "◇", "Under Review": "◈", "For Interview": "◎", "Approved": "◉", "Enrolled": "⬡", "Rejected": "✕" };
 
-export const FLOORS = ["Ground Floor", "2nd Floor", "3rd Floor"];
+// FLOORS is kept as the default starter list shown in the Add Room dropdown
+// when no rooms exist yet. At runtime, RoomsModule derives the full list
+// dynamically from actual room data so any building / floor combination works.
+export const FLOORS = ["Ground Floor", "2nd Floor", "3rd Floor", "4th Floor", "5th Floor"];
+
+// Default buildings — the UI lets admins type any building name freely.
+export const BUILDINGS = ["Main Building"];
 export const CATEGORIES = ["Classroom", "Laboratory", "Library", "Gym", "Faculty Room", "Admin Office", "Canteen", "Clinic"];
 export const CAT_ICON = { Classroom: "◫", Laboratory: "⬡", Library: "▣", Gym: "◉", "Faculty Room": "◈", "Admin Office": "⬛", Canteen: "◎", Clinic: "✚" };
 export const CAT_COLOR = {
