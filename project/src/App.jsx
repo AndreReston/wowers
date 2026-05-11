@@ -4,6 +4,8 @@ import { T } from './lib/styles';
 import { ROLE_META } from './lib/constants';
 import { Notification } from './components/UI';
 import AuthScreen from './modules/AuthScreen';
+import SchoolDirectory from './modules/SchoolDirectory';
+import SchoolAdmin from './modules/SchoolAdmin';
 import {
   AdminDashboard, StudentDashboard,
   UsersModule, RoomsModule, EnrollmentModule,
@@ -12,17 +14,19 @@ import {
 } from './modules/Modules';
 
 const NAV = [
-  { id: 'dashboard', label: 'Dashboard', icon: '⬡', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
-  { id: 'users', label: 'Users', icon: '◈', roles: ['Admin'] },
-  { id: 'enrollment', label: 'Enrollment', icon: '◎', roles: ['Admin', 'Applicant'] },
-  { id: 'schedule', label: 'Schedule', icon: '◫', roles: ['Admin', 'Teacher', 'Student'] },
-  { id: 'gradebook', label: 'Gradebook', icon: '▣', roles: ['Admin', 'Teacher', 'Student'] },
-  { id: 'attendance', label: 'Attendance', icon: '◉', roles: ['Admin', 'Teacher', 'Student'] },
-  { id: 'rooms', label: 'Rooms', icon: '⬡', roles: ['Admin'] },
-  { id: 'library', label: 'Library', icon: '▣', roles: ['Admin', 'Teacher', 'Student'] },
+  { id: 'dashboard',     label: 'Dashboard',    icon: '⬡', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
+  { id: 'users',         label: 'Users',         icon: '◈', roles: ['Admin'] },
+  { id: 'enrollment',    label: 'Enrollment',    icon: '◎', roles: ['Admin', 'Applicant'] },
+  { id: 'schedule',      label: 'Schedule',      icon: '◫', roles: ['Admin', 'Teacher', 'Student'] },
+  { id: 'gradebook',     label: 'Gradebook',     icon: '▣', roles: ['Admin', 'Teacher', 'Student'] },
+  { id: 'attendance',    label: 'Attendance',    icon: '◉', roles: ['Admin', 'Teacher', 'Student'] },
+  { id: 'rooms',         label: 'Rooms',         icon: '⬡', roles: ['Admin'] },
+  { id: 'library',       label: 'Library',       icon: '▣', roles: ['Admin', 'Teacher', 'Student'] },
   { id: 'announcements', label: 'Announcements', icon: '◈', roles: ['Admin', 'Teacher', 'Student'] },
-  { id: 'search', label: 'Search', icon: '◈', roles: ['Admin', 'Teacher', 'Student'] },
-  { id: 'profile', label: 'Profile', icon: '◎', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
+  { id: 'search',        label: 'Search',        icon: '◈', roles: ['Admin', 'Teacher', 'Student'] },
+  { id: 'school',        label: 'My School',     icon: '🏫', roles: ['Admin'] },
+  { id: 'directory',     label: 'Directory',     icon: '🌐', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
+  { id: 'profile',       label: 'Profile',       icon: '◎', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
 ];
 
 function useIsMobile(breakpoint = 768) {
@@ -35,11 +39,16 @@ function useIsMobile(breakpoint = 768) {
   return mobile;
 }
 
+// ─── APP SHELL (authenticated) ────────────────────────────────────────────────
+
 function AppShell() {
   const { user, profile, loading, signOut } = useAuth();
   const [page, setPage] = useState('dashboard');
   const [note, setNote] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Show directory or auth screen state for unauthenticated users
+  const [showAuth, setShowAuth] = useState(false);
   const mobile = useIsMobile();
 
   const notify = (msg, type = 'success') => {
@@ -58,33 +67,47 @@ function AppShell() {
     );
   }
 
-  if (!user || !profile) return <AuthScreen />;
+  // ── Not logged in: show directory (default) or auth screen ────────────────
+  if (!user || !profile) {
+    if (showAuth) return <AuthScreen onBack={() => setShowAuth(false)} />;
+    return (
+      <SchoolDirectory
+        onApply={() => setShowAuth(true)}
+        onCreateSchool={() => setShowAuth(true)}
+        currentUser={null}
+      />
+    );
+  }
 
+  // ── Authenticated ──────────────────────────────────────────────────────────
   const role = profile.role || 'Student';
   const visibleNav = NAV.filter(n => n.roles.includes(role));
   const meta = ROLE_META[role];
 
-  const navigate = (id) => {
-    setPage(id);
-    setDrawerOpen(false);
-  };
+  const navigate = (id) => { setPage(id); setDrawerOpen(false); };
 
   const renderModule = () => {
     switch (page) {
       case 'dashboard':
-        return role === 'Admin' || role === 'Teacher'
-          ? <AdminDashboard />
-          : <StudentDashboard />;
-      case 'users': return <UsersModule notify={notify} />;
-      case 'enrollment': return <EnrollmentModule notify={notify} />;
-      case 'schedule': return <ScheduleModule notify={notify} />;
-      case 'gradebook': return <GradebookModule notify={notify} />;
-      case 'attendance': return <AttendanceModule notify={notify} />;
-      case 'rooms': return <RoomsModule notify={notify} />;
-      case 'library': return <LibraryModule notify={notify} />;
+        return role === 'Admin' || role === 'Teacher' ? <AdminDashboard /> : <StudentDashboard />;
+      case 'users':         return <UsersModule notify={notify} />;
+      case 'enrollment':    return <EnrollmentModule notify={notify} />;
+      case 'schedule':      return <ScheduleModule notify={notify} />;
+      case 'gradebook':     return <GradebookModule notify={notify} />;
+      case 'attendance':    return <AttendanceModule notify={notify} />;
+      case 'rooms':         return <RoomsModule notify={notify} />;
+      case 'library':       return <LibraryModule notify={notify} />;
       case 'announcements': return <AnnouncementsModule notify={notify} />;
-      case 'search': return <SearchModule />;
-      case 'profile': return <ProfileModule notify={notify} />;
+      case 'search':        return <SearchModule />;
+      case 'school':        return <SchoolAdmin notify={notify} />;
+      case 'profile':       return <ProfileModule notify={notify} />;
+      case 'directory':
+        return (
+          <SchoolDirectory
+            onApply={() => navigate('enrollment')}
+            currentUser={user}
+          />
+        );
       default: return <AdminDashboard />;
     }
   };
@@ -127,29 +150,38 @@ function AppShell() {
     </nav>
   );
 
+  // Directory page renders full-width (no sidebar)
+  if (page === 'directory') {
+    return (
+      <div style={T.root}>
+        <Notification note={note} />
+        <SchoolDirectory
+          onApply={() => navigate('enrollment')}
+          onBack={() => navigate('dashboard')}
+          currentUser={user}
+          onGoBack={() => navigate('dashboard')}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={T.root}>
       <Notification note={note} />
 
-      {/* Mobile overlay when drawer is open */}
       {mobile && drawerOpen && (
-        <div
-          onClick={() => setDrawerOpen(false)}
-          style={{ position: 'fixed', inset: 0, background: '#00000055', zIndex: 1099 }}
-        />
+        <div onClick={() => setDrawerOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: '#00000055', zIndex: 1099 }} />
       )}
 
       <div style={{ display: 'flex', minHeight: '100vh' }}>
         {sidebar}
 
         <main style={{ flex: 1, padding: mobile ? '1rem' : '1.5rem', overflowY: 'auto', maxHeight: '100vh' }}>
-          {/* Mobile top bar */}
           {mobile && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: '1rem' }}>
-              <button
-                onClick={() => setDrawerOpen(true)}
-                style={{ background: '#fff', border: '1px solid #e8e6e0', borderRadius: 10, padding: '8px 12px', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
-              >
+              <button onClick={() => setDrawerOpen(true)}
+                style={{ background: '#fff', border: '1px solid #e8e6e0', borderRadius: 10, padding: '8px 12px', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>
                 &#9776;
               </button>
               <div style={{ fontSize: 16, fontFamily: "'Fraunces', Georgia, serif", fontWeight: 700, color: '#1a1a2e' }}>SchoolOS</div>

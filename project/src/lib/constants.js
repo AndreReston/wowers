@@ -1,3 +1,30 @@
+// ─── SCHOOL DIRECTORY CONSTANTS ──────────────────────────────────────────────
+
+export const SCHOOL_LEVELS = [
+  "Elementary",
+  "Junior High School",
+  "Senior High School",
+  "College",
+  "K-12",
+  "Vocational / Tech",
+];
+
+export const SCHOOL_TYPES = [
+  "Private",
+  "Public",
+  "State University",
+  "LGU-Operated",
+];
+
+export const LEVEL_META = {
+  "Elementary":        { icon: "🏫", bg: "#eef4ff", color: "#0f3460", border: "#b5d4f4", gradient: "linear-gradient(135deg,#0f3460,#1565c0)" },
+  "Junior High School":{ icon: "📒", bg: "#eeedfe", color: "#3c3489", border: "#afa9ec", gradient: "linear-gradient(135deg,#3c3489,#6c5ce7)" },
+  "Senior High School":{ icon: "📗", bg: "#e1f5ee", color: "#0f6e56", border: "#5dcaa5", gradient: "linear-gradient(135deg,#0f6e56,#1b4332)" },
+  "College":           { icon: "🎓", bg: "#fff8ee", color: "#633806", border: "#fac775", gradient: "linear-gradient(135deg,#1a1a2e,#0f3460)" },
+  "K-12":              { icon: "🌟", bg: "#fbeaf0", color: "#72243e", border: "#ed93b1", gradient: "linear-gradient(135deg,#72243e,#c0392b)" },
+  "Vocational / Tech": { icon: "🔧", bg: "#eaf3de", color: "#27500a", border: "#97c459", gradient: "linear-gradient(135deg,#27500a,#4a7c1f)" },
+};
+
 export const ROLES = ["Admin", "Teacher", "Student", "Applicant"];
 
 export const ROLE_META = {

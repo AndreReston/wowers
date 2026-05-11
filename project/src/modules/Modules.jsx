@@ -413,159 +413,419 @@ function _saveLayout(layout) {
   try { localStorage.setItem(_BP_STORAGE_KEY, JSON.stringify(layout)); } catch {}
 }
 
-// ─── BLUEPRINT CANVAS ─────────────────────────────────────────────────────────
+// ─── MULTI-FLOOR STACKED ISOMETRIC BLUEPRINT ─────────────────────────────────
 
-function BlueprintCanvas({ rooms, onRoomClick, activeFloor }) {
-  const [layout, setLayout] = useState(_loadLayout);
+const ISO_CANVAS_W = 1400;
+const ISO_CANVAS_H = 920;
+const ISO_ORIGIN_X = 700;
+const ISO_ORIGIN_Y = 220;
+
+const FLOOR_LABEL_ORDER = [
+  'Ground Floor', '2nd Floor', '3rd Floor', '4th Floor', '5th Floor',
+];
+function floorIdx(label) {
+  const i = FLOOR_LABEL_ORDER.indexOf(label);
+  return i >= 0 ? i : 0;
+}
+
+const FLOOR_LIFT_PX = 110;
+const BASE_TILE_W = 110;
+const BASE_TILE_H = 55;
+const BASE_WALL_H = 44;
+
+const _ISO_STORAGE_KEY = 'schoolos_iso_blueprint_layout_v2';
+function _loadIsoLayout() {
+  try { return JSON.parse(localStorage.getItem(_ISO_STORAGE_KEY) || '{}'); } catch { return {}; }
+}
+function _saveIsoLayout(layout) {
+  try { localStorage.setItem(_ISO_STORAGE_KEY, JSON.stringify(layout)); } catch {}
+}
+
+function makeFloorIso(tileW, tileH, panX, panY) {
+  function project(gx, gy, floorElevation = 0) {
+    const sx = ISO_ORIGIN_X + panX + (gx - gy) * (tileW / 2);
+    const sy = ISO_ORIGIN_Y + panY + (gx + gy) * (tileH / 2) - floorElevation;
+    return { sx, sy };
+  }
+  function screenToGridDelta(dx, dy) {
+    const gx = (dx / (tileW / 2) + dy / (tileH / 2)) / 2;
+    const gy = (dy / (tileH / 2) - dx / (tileW / 2)) / 2;
+    return { gx, gy };
+  }
+  return { project, screenToGridDelta };
+}
+
+function IsoRoomBox({ gx, gy, gw, gh, wallH, floorElev, tileW, tileH, panX, panY,
+  faceColor, rightColor, leftColor, strokeColor, isSelected,
+  children, onClick, onDragStart, onResizeDrag }) {
+  const { project } = makeFloorIso(tileW, tileH, panX, panY);
+  const tl = project(gx,      gy,      floorElev);
+  const tr = project(gx + gw, gy,      floorElev);
+  const br = project(gx + gw, gy + gh, floorElev);
+  const bl = project(gx,      gy + gh, floorElev);
+  const topPts   = `${tl.sx},${tl.sy} ${tr.sx},${tr.sy} ${br.sx},${br.sy} ${bl.sx},${bl.sy}`;
+  const rightPts = `${tr.sx},${tr.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + wallH} ${tr.sx},${tr.sy + wallH}`;
+  const leftPts  = `${bl.sx},${bl.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + wallH} ${bl.sx},${bl.sy + wallH}`;
+  const cx = (tl.sx + tr.sx + br.sx + bl.sx) / 4;
+  const cy = (tl.sy + tr.sy + br.sy + bl.sy) / 4;
+  const rhx = br.sx, rhy = br.sy + wallH;
+  return (
+    <g style={{ cursor: 'grab' }} onMouseDown={onDragStart}
+      onClick={e => { e.stopPropagation(); onClick && onClick(); }}>
+      <polygon points={rightPts} fill={rightColor} stroke={strokeColor} strokeWidth="0.8" />
+      <polygon points={leftPts}  fill={leftColor}  stroke={strokeColor} strokeWidth="0.8" />
+      <polygon points={topPts}   fill={faceColor}  stroke={strokeColor} strokeWidth="1.2"
+        style={{ filter: isSelected ? `drop-shadow(0 0 6px ${strokeColor})` : 'none' }} />
+      {isSelected && <polygon points={topPts} fill="none" stroke={strokeColor} strokeWidth="2.5" strokeOpacity="0.9" />}
+      {children && (
+        <foreignObject x={cx - 55} y={cy - 24} width={110} height={48} style={{ pointerEvents: 'none' }}>
+          <div xmlns="http://www.w3.org/1999/xhtml"
+            style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+            {children}
+          </div>
+        </foreignObject>
+      )}
+      <circle cx={rhx} cy={rhy} r={6} fill={isSelected ? '#5ba4ff' : strokeColor}
+        stroke="#fff" strokeWidth="1.5" style={{ cursor: 'nwse-resize' }}
+        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onResizeDrag && onResizeDrag(e); }}
+        onClick={e => e.stopPropagation()} />
+    </g>
+  );
+}
+
+function IsoStaircase({ fromElev, toElev, gx, gy, tileW, tileH, wallH, panX, panY }) {
+  const { project } = makeFloorIso(tileW, tileH, panX, panY);
+  const W = 1.5, D = 1.0, steps = 6;
+  const paths = [];
+  for (let s = 0; s < steps; s++) {
+    const t0 = s / steps, t1 = (s + 1) / steps;
+    const e0 = fromElev + (toElev - fromElev) * t0;
+    const e1 = fromElev + (toElev - fromElev) * t1;
+    const x0 = gx + W * t0, x1 = gx + W * t1;
+    const tl = project(x0, gy,     e0);
+    const tr = project(x1, gy,     e1);
+    const br = project(x1, gy + D, e1);
+    const bl = project(x0, gy + D, e0);
+    const topPts   = `${tl.sx},${tl.sy} ${tr.sx},${tr.sy} ${br.sx},${br.sy} ${bl.sx},${bl.sy}`;
+    const riserPts = `${tr.sx},${tr.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + wallH * 0.25} ${tr.sx},${tr.sy + wallH * 0.25}`;
+    paths.push(
+      <g key={s}>
+        <polygon points={riserPts} fill="rgba(180,200,255,0.18)" stroke="rgba(100,160,255,0.35)" strokeWidth="0.5" />
+        <polygon points={topPts}   fill={s % 2 === 0 ? 'rgba(160,190,255,0.28)' : 'rgba(120,160,255,0.22)'}
+          stroke="rgba(100,160,255,0.45)" strokeWidth="0.6" />
+      </g>
+    );
+  }
+  const r0 = project(gx,     gy,     fromElev);
+  const r1 = project(gx + W, gy,     toElev);
+  const r2 = project(gx,     gy + D, fromElev);
+  const r3 = project(gx + W, gy + D, toElev);
+  const railH = wallH * 0.55;
+  return (
+    <g>
+      {paths}
+      <line x1={r0.sx} y1={r0.sy - railH} x2={r1.sx} y2={r1.sy - railH} stroke="rgba(100,160,255,0.6)" strokeWidth="1.5" strokeDasharray="4,2" />
+      <line x1={r0.sx} y1={r0.sy} x2={r0.sx} y2={r0.sy - railH} stroke="rgba(100,160,255,0.4)" strokeWidth="1" />
+      <line x1={r1.sx} y1={r1.sy} x2={r1.sx} y2={r1.sy - railH} stroke="rgba(100,160,255,0.4)" strokeWidth="1" />
+      <line x1={r2.sx} y1={r2.sy - railH} x2={r3.sx} y2={r3.sy - railH} stroke="rgba(100,160,255,0.4)" strokeWidth="1" strokeDasharray="4,2" />
+      <text x={(r0.sx + r1.sx) / 2} y={(r0.sy + r1.sy) / 2 - railH - 4}
+        fill="rgba(160,200,255,0.7)" fontSize="7" fontFamily="monospace" textAnchor="middle">STAIRS</text>
+    </g>
+  );
+}
+
+function IsoElevator({ fromElev, toElev, gx, gy, tileW, tileH, wallH, panX, panY }) {
+  const { project } = makeFloorIso(tileW, tileH, panX, panY);
+  const W = 1.0, D = 1.0;
+  const tr  = project(gx + W, gy,     fromElev);
+  const bl  = project(gx,     gy + D, fromElev);
+  const ttr = project(gx + W, gy,     toElev);
+  const tbl = project(gx,     gy + D, toElev);
+  const ttl = project(gx,     gy,     toElev);
+  const tbrP = project(gx + W, gy + D, toElev);
+  const midElev = (fromElev + toElev) / 2;
+  const ctlm = project(gx + 0.15,     gy + 0.15,     midElev);
+  const ctrm = project(gx + W - 0.15, gy + 0.15,     midElev);
+  const cbrm = project(gx + W - 0.15, gy + D - 0.15, midElev);
+  const cblm = project(gx + 0.15,     gy + D - 0.15, midElev);
+  const topFace = `${ttl.sx},${ttl.sy} ${ttr.sx},${ttr.sy} ${tbrP.sx},${tbrP.sy} ${tbl.sx},${tbl.sy}`;
+  const cabPts  = `${ctlm.sx},${ctlm.sy} ${ctrm.sx},${ctrm.sy} ${cbrm.sx},${cbrm.sy} ${cblm.sx},${cblm.sy}`;
+  const cx = (ttl.sx + ttr.sx + tbrP.sx + tbl.sx) / 4;
+  const cy = (ttl.sy + ttr.sy + tbrP.sy + tbl.sy) / 4;
+  return (
+    <g>
+      <line x1={tr.sx}  y1={tr.sy}  x2={ttr.sx} y2={ttr.sy} stroke="rgba(255,200,60,0.5)"  strokeWidth="1" strokeDasharray="4,3" />
+      <line x1={bl.sx}  y1={bl.sy}  x2={tbl.sx} y2={tbl.sy} stroke="rgba(255,200,60,0.35)" strokeWidth="1" strokeDasharray="4,3" />
+      <polygon points={cabPts}  fill="rgba(255,220,80,0.3)"  stroke="rgba(255,200,60,0.75)" strokeWidth="1.2" />
+      <polygon points={topFace} fill="rgba(255,215,60,0.15)" stroke="rgba(255,200,60,0.5)"  strokeWidth="0.8" />
+      <text x={cx} y={cy - 6} fill="rgba(255,215,60,0.85)" fontSize="7" fontFamily="monospace" textAnchor="middle" fontWeight="bold">LIFT</text>
+    </g>
+  );
+}
+
+function IsoFloorSlab({ floorIndex: fi, tileW, tileH, panX, panY, zoom }) {
+  const { project } = makeFloorIso(tileW, tileH, panX, panY);
+  const elev  = fi * FLOOR_LIFT_PX * zoom;
+  const slabH = 6 * zoom;
+  const W = 22, D = 17;
+  const tl = project(0, 0, elev); const tr = project(W, 0, elev);
+  const br = project(W, D, elev); const bl = project(0, D, elev);
+  const topPts   = `${tl.sx},${tl.sy} ${tr.sx},${tr.sy} ${br.sx},${br.sy} ${bl.sx},${bl.sy}`;
+  const rightPts = `${tr.sx},${tr.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + slabH} ${tr.sx},${tr.sy + slabH}`;
+  const leftPts  = `${bl.sx},${bl.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + slabH} ${bl.sx},${bl.sy + slabH}`;
+  const labelP = project(0, D / 2, elev);
+  const floorLabel = FLOOR_LABEL_ORDER[fi] || `Floor ${fi}`;
+  return (
+    <g>
+      {Array.from({ length: 23 }, (_, i) => {
+        const a = project(i, 0, elev), b = project(i, D, elev);
+        return <line key={`gx${fi}-${i}`} x1={a.sx} y1={a.sy} x2={b.sx} y2={b.sy} stroke="rgba(100,160,255,0.05)" strokeWidth="0.7" />;
+      })}
+      {Array.from({ length: 18 }, (_, j) => {
+        const a = project(0, j, elev), b = project(W, j, elev);
+        return <line key={`gy${fi}-${j}`} x1={a.sx} y1={a.sy} x2={b.sx} y2={b.sy} stroke="rgba(100,160,255,0.05)" strokeWidth="0.7" />;
+      })}
+      <polygon points={rightPts} fill="rgba(20,50,100,0.55)"  stroke="rgba(60,120,200,0.2)"  strokeWidth="0.5" />
+      <polygon points={leftPts}  fill="rgba(15,40,80,0.55)"   stroke="rgba(60,120,200,0.2)"  strokeWidth="0.5" />
+      <polygon points={topPts}   fill="rgba(15,30,62,0.45)"   stroke="rgba(60,120,200,0.18)" strokeWidth="0.8" />
+      <text x={labelP.sx - 6} y={labelP.sy} fill="rgba(100,160,255,0.55)" fontSize="9" fontFamily="monospace" fontWeight="bold" textAnchor="end">
+        {floorLabel.toUpperCase()}
+      </text>
+    </g>
+  );
+}
+
+function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
+  const [layout, setLayout] = useState(_loadIsoLayout);
   const [selected, setSelected] = useState(null);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(0.85);
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
+  const panRef = useRef(null);
+  const svgRef = useRef(null);
+  const isPanning = useRef(false);
+  const [panCursor, setPanCursor] = useState(false);
+
+  const MIN_ZOOM = 0.3, MAX_ZOOM = 1.8;
+  const SNAP_G = 0.5;
+  const MIN_GW = 1, MIN_GH = 1, MAX_GW = 8, MAX_GH = 8;
+
+  const tileW = BASE_TILE_W * zoom;
+  const tileH = BASE_TILE_H * zoom;
+  const wallH  = BASE_WALL_H * zoom;
+
+  const { screenToGridDelta } = makeFloorIso(tileW, tileH, pan.x, pan.y);
+
+  const allFloorLabels = [...new Set(rooms.map(r => r.floor || 'Ground Floor'))];
+  const allFloorIdxs   = allFloorLabels.map(floorIdx);
+  const minFloor = allFloorIdxs.length > 0 ? Math.min(...allFloorIdxs) : 0;
+  const maxFloor = allFloorIdxs.length > 0 ? Math.max(...allFloorIdxs) : 0;
+  const allFloorsRange = Array.from({ length: maxFloor - minFloor + 1 }, (_, i) => minFloor + i);
 
   useEffect(() => {
     setLayout(prev => {
       const next = { ...prev };
       let changed = false;
-      rooms.forEach((r, i) => {
-        if (!next[r.id]) {
-          next[r.id] = { x: _SNAP + (i % 6) * 200, y: _SNAP + Math.floor(i / 6) * 130, w: 170, h: 90 };
-          changed = true;
-        }
+      const byFloor = {};
+      rooms.forEach(r => {
+        const fi = floorIdx(r.floor || 'Ground Floor');
+        if (!byFloor[fi]) byFloor[fi] = [];
+        byFloor[fi].push(r);
       });
-      if (changed) _saveLayout(next);
+      Object.values(byFloor).forEach(fRooms => {
+        fRooms.forEach((r, i) => {
+          if (!next[r.id]) {
+            next[r.id] = { gx: (i % 5) * 3.5 + 1, gy: Math.floor(i / 5) * 3.5 + 1, gw: 2.5, gh: 2 };
+            changed = true;
+          }
+        });
+      });
+      if (changed) _saveIsoLayout(next);
       return next;
     });
   }, [rooms]);
 
-  const snap = v => Math.round(v / _SNAP) * _SNAP;
+  const snapG = v => Math.round(v / SNAP_G) * SNAP_G;
 
-  const onDragMouseDown = useCallback((e, roomId) => {
-    e.preventDefault(); e.stopPropagation();
-    setSelected(roomId);
-    const startX = e.clientX, startY = e.clientY;
-    const orig = layout[roomId] || { x: 0, y: 0, w: 170, h: 90 };
-    dragRef.current = { roomId, startX, startY, origX: orig.x, origY: orig.y };
+  const onPanStart = useCallback((e) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    e.preventDefault();
+    isPanning.current = false; setPanCursor(true);
+    panRef.current = { startX: e.clientX, startY: e.clientY, origX: pan.x, origY: pan.y };
+    const onMove = me => {
+      if (!panRef.current) return;
+      const dx = me.clientX - panRef.current.startX, dy = me.clientY - panRef.current.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) isPanning.current = true;
+      setPan({ x: panRef.current.origX + dx, y: panRef.current.origY + dy });
+    };
+    const onUp = () => { panRef.current = null; isPanning.current = false; setPanCursor(false); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+  }, [pan]);
 
+  const onWheel = useCallback((e) => {
+    e.preventDefault();
+    if (e.shiftKey) setPan(p => ({ ...p, x: p.x - e.deltaY }));
+    else if (e.ctrlKey) setPan(p => ({ ...p, y: p.y - e.deltaY }));
+    else setZoom(z => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z - e.deltaY * 0.001)));
+  }, []);
+
+  const onDragStart = useCallback((e, roomId) => {
+    e.preventDefault(); e.stopPropagation(); setSelected(roomId);
+    const orig = layout[roomId] || { gx: 0, gy: 0, gw: 2.5, gh: 2 };
+    dragRef.current = { roomId, startX: e.clientX, startY: e.clientY, origGx: orig.gx, origGy: orig.gy };
     const onMove = me => {
       if (!dragRef.current) return;
-      const dx = me.clientX - dragRef.current.startX;
-      const dy = me.clientY - dragRef.current.startY;
-      const nx = Math.max(0, Math.min(_CANVAS_W - orig.w, snap(dragRef.current.origX + dx)));
-      const ny = Math.max(0, Math.min(_CANVAS_H - orig.h, snap(dragRef.current.origY + dy)));
-      setLayout(prev => ({ ...prev, [roomId]: { ...prev[roomId], x: nx, y: ny } }));
+      const { gx: dgx, gy: dgy } = screenToGridDelta(me.clientX - dragRef.current.startX, me.clientY - dragRef.current.startY);
+      setLayout(prev => ({ ...prev, [roomId]: { ...prev[roomId], gx: Math.max(0, snapG(dragRef.current.origGx + dgx)), gy: Math.max(0, snapG(dragRef.current.origGy + dgy)) } }));
     };
-    const onUp = () => {
-      dragRef.current = null;
-      setLayout(prev => { _saveLayout(prev); return prev; });
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }, [layout]);
+    const onUp = () => { dragRef.current = null; setLayout(prev => { _saveIsoLayout(prev); return prev; }); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+  }, [layout, screenToGridDelta]);
 
-  const onResizeMouseDown = useCallback((e, roomId) => {
-    e.preventDefault(); e.stopPropagation();
-    setSelected(roomId);
-    const startX = e.clientX, startY = e.clientY;
-    const orig = layout[roomId] || { x: 0, y: 0, w: 170, h: 90 };
-    resizeRef.current = { roomId, startX, startY, origW: orig.w, origH: orig.h };
-
+  const onResizeStart = useCallback((e, roomId) => {
+    e.preventDefault(); e.stopPropagation(); setSelected(roomId);
+    const orig = layout[roomId] || { gx: 0, gy: 0, gw: 2.5, gh: 2 };
+    resizeRef.current = { roomId, startX: e.clientX, startY: e.clientY, origGw: orig.gw, origGh: orig.gh };
     const onMove = me => {
       if (!resizeRef.current) return;
-      const dx = me.clientX - resizeRef.current.startX;
-      const dy = me.clientY - resizeRef.current.startY;
-      const nw = Math.max(_MIN_W, snap(resizeRef.current.origW + dx));
-      const nh = Math.max(_MIN_H, snap(resizeRef.current.origH + dy));
-      setLayout(prev => ({ ...prev, [roomId]: { ...prev[roomId], w: nw, h: nh } }));
+      const { gx: dgx, gy: dgy } = screenToGridDelta(me.clientX - resizeRef.current.startX, me.clientY - resizeRef.current.startY);
+      setLayout(prev => ({ ...prev, [roomId]: { ...prev[roomId], gw: Math.max(MIN_GW, Math.min(MAX_GW, snapG(resizeRef.current.origGw + dgx))), gh: Math.max(MIN_GH, Math.min(MAX_GH, snapG(resizeRef.current.origGh + dgy))) } }));
     };
-    const onUp = () => {
-      resizeRef.current = null;
-      setLayout(prev => { _saveLayout(prev); return prev; });
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }, [layout]);
+    const onUp = () => { resizeRef.current = null; setLayout(prev => { _saveIsoLayout(prev); return prev; }); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+  }, [layout, screenToGridDelta]);
 
-  const displayRooms = activeFloor === 'All' ? rooms : rooms.filter(r => r.floor === activeFloor);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [onWheel]);
+
+  const visibleRooms = activeFloor === 'All' ? rooms : rooms.filter(r => r.floor === activeFloor);
+  const floorsVisible = activeFloor === 'All' ? allFloorsRange : [floorIdx(activeFloor)];
+
+  const sortedRooms = [...visibleRooms].sort((a, b) => {
+    const fA = floorIdx(a.floor || 'Ground Floor'), fB = floorIdx(b.floor || 'Ground Floor');
+    if (fA !== fB) return fA - fB;
+    const pa = layout[a.id], pb = layout[b.id];
+    if (!pa || !pb) return 0;
+    return (pa.gx + pa.gy) - (pb.gx + pb.gy);
+  });
+
+  const STAIR_GX = 19, STAIR_GY = 1;
+  const ELEV_GX  = 19, ELEV_GY  = 4;
+
+  const _pbs = { width: '100%', height: '100%', border: 'none', borderRadius: 6, background: 'rgba(100,160,255,0.1)', color: 'rgba(100,160,255,0.6)', cursor: 'pointer', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit', padding: 0 };
 
   return (
-    <div
-      style={{
-        position: 'relative', width: _CANVAS_W, height: _CANVAS_H,
-        background: '#0f1e35',
-        backgroundImage: `linear-gradient(rgba(100,160,255,0.07) 1px,transparent 1px),linear-gradient(90deg,rgba(100,160,255,0.07) 1px,transparent 1px)`,
-        backgroundSize: `${_GRID}px ${_GRID}px`,
-        borderRadius: 12, overflow: 'hidden',
-        border: '1.5px solid #2a4a7a',
-        boxShadow: '0 8px 40px #00000060',
-        userSelect: 'none',
-      }}
-      onClick={() => setSelected(null)}
-    >
-      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-        <text x="16" y="28" fill="rgba(100,160,255,0.4)" fontSize="11" fontFamily="monospace">N↑</text>
-        <text x="16" y="42" fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace">SCHOOL BLUEPRINT</text>
-        <text x={_CANVAS_W - 12} y={_CANVAS_H - 10} fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace" textAnchor="end">
-          {activeFloor === 'All' ? 'ALL FLOORS' : activeFloor.toUpperCase()}
-        </text>
-      </svg>
-
-      {displayRooms.map(room => {
-        const pos = layout[room.id];
-        if (!pos) return null;
-        const bp = CAT_BP_COLOR[room.category] || CAT_BP_COLOR['Classroom'];
-        const isSelected = selected === room.id;
-        const dot = room.status === 'Available' ? '#4ade80' : room.status === 'Occupied' ? '#f87171' : '#fb923c';
-
-        return (
-          <div
-            key={room.id}
-            style={{
-              position: 'absolute', left: pos.x, top: pos.y, width: pos.w, height: pos.h,
-              background: bp.fill,
-              border: `2px solid ${isSelected ? '#5ba4ff' : bp.stroke}`,
-              borderRadius: 4,
-              boxShadow: isSelected ? '0 0 0 3px #5ba4ff55,0 4px 20px #00000060' : '0 2px 8px #00000040',
-              cursor: 'grab', overflow: 'hidden', display: 'flex', flexDirection: 'column',
-              transition: 'box-shadow 0.15s',
-            }}
-            onMouseDown={e => onDragMouseDown(e, room.id)}
-            onClick={e => { e.stopPropagation(); onRoomClick(room); }}
-          >
-            <div style={{ background: bp.stroke, padding: '3px 6px', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-              <span style={{ fontSize: 10, color: '#fff', opacity: 0.85 }}>{CAT_ICON[room.category]}</span>
-              <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {room.name}
-              </span>
-              <div style={{ width: 6, height: 6, borderRadius: 50, background: dot, flexShrink: 0 }} />
-            </div>
-            <div style={{ flex: 1, padding: '4px 6px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-              <div style={{ fontSize: 9, color: bp.label, fontWeight: 600, opacity: 0.8, letterSpacing: '0.04em' }}>{room.category}</div>
-              {pos.h >= 80 && (
-                <div style={{ fontSize: 8, color: bp.label, opacity: 0.55, marginTop: 2 }}>
-                  {room.seats}/{room.capacity} seats · {room.floor}
-                </div>
-              )}
-            </div>
-            {/* Resize handle */}
-            <div
-              onMouseDown={e => onResizeMouseDown(e, room.id)}
-              onClick={e => e.stopPropagation()}
-              style={{ position: 'absolute', right: 0, bottom: 0, width: 14, height: 14, cursor: 'nwse-resize', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            >
-              <svg width="8" height="8" viewBox="0 0 8 8">
-                <line x1="2" y1="8" x2="8" y2="2" stroke={bp.stroke} strokeWidth="1.5" />
-                <line x1="5" y1="8" x2="8" y2="5" stroke={bp.stroke} strokeWidth="1.5" />
-              </svg>
-            </div>
+    <div style={{ position: 'relative' }}>
+      <div style={{ position: 'absolute', top: 12, right: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: '5px 8px', border: '1px solid rgba(100,160,255,0.2)' }}>
+          <button onClick={() => setZoom(z => Math.max(MIN_ZOOM, +(z - 0.1).toFixed(2)))} style={{ ..._pbs, width: 24, height: 24, fontSize: 14 }}>−</button>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(100,160,255,0.7)', minWidth: 36, textAlign: 'center', fontFamily: 'monospace' }}>{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom(z => Math.min(MAX_ZOOM, +(z + 0.1).toFixed(2)))} style={{ ..._pbs, width: 24, height: 24, fontSize: 14 }}>+</button>
+          <button onClick={() => { setZoom(0.85); setPan({ x: 0, y: 0 }); }} style={{ ..._pbs, width: 24, height: 24, fontSize: 9 }}>⌂</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '28px 28px 28px', gridTemplateRows: '28px 28px 28px', gap: 2, background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: 5, border: '1px solid rgba(100,160,255,0.2)' }}>
+          <div /><button onClick={() => setPan(p => ({ ...p, y: p.y + 80 }))} style={_pbs}>▲</button><div />
+          <button onClick={() => setPan(p => ({ ...p, x: p.x + 80 }))} style={_pbs}>◀</button>
+          <button onClick={() => setPan({ x: 0, y: 0 })} style={{ ..._pbs, fontSize: 8 }}>⌂</button>
+          <button onClick={() => setPan(p => ({ ...p, x: p.x - 80 }))} style={_pbs}>▶</button>
+          <div /><button onClick={() => setPan(p => ({ ...p, y: p.y - 80 }))} style={_pbs}>▼</button><div />
+        </div>
+        {allFloorsRange.length > 0 && (
+          <div style={{ background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: '7px 10px', border: '1px solid rgba(100,160,255,0.2)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {[...allFloorsRange].reverse().map(fi => (
+              <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: `rgba(100,160,255,${0.2 + fi * 0.12})`, border: '1px solid rgba(100,160,255,0.4)' }} />
+                <span style={{ fontSize: 9, color: 'rgba(100,160,255,0.65)', fontFamily: 'monospace' }}>{FLOOR_LABEL_ORDER[fi] || `Floor ${fi}`}</span>
+              </div>
+            ))}
+            {hasElevator && allFloorsRange.length > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, borderTop: '1px solid rgba(100,160,255,0.1)', paddingTop: 4 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: 'rgba(255,210,60,0.4)', border: '1px solid rgba(255,200,60,0.6)' }} />
+                <span style={{ fontSize: 9, color: 'rgba(255,210,60,0.75)', fontFamily: 'monospace' }}>ELEVATOR</span>
+              </div>
+            )}
+            {allFloorsRange.length > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: 'rgba(100,160,255,0.15)', border: '1px dashed rgba(100,160,255,0.5)' }} />
+                <span style={{ fontSize: 9, color: 'rgba(100,160,255,0.55)', fontFamily: 'monospace' }}>STAIRCASE</span>
+              </div>
+            )}
           </div>
-        );
-      })}
+        )}
+        <div style={{ fontSize: 9, color: 'rgba(100,160,255,0.3)', textAlign: 'right', lineHeight: 1.5 }}>
+          Scroll to zoom · Drag to pan<br />Shift+scroll: horiz · Click room to view
+        </div>
+      </div>
+
+      <svg ref={svgRef} width={ISO_CANVAS_W} height={ISO_CANVAS_H}
+        style={{ background: '#080f1e', borderRadius: 12, border: '1.5px solid #1e3a5f', boxShadow: '0 8px 40px #00000090', display: 'block', userSelect: 'none', cursor: panCursor ? 'grabbing' : 'grab' }}
+        onMouseDown={onPanStart}>
+
+        <text x="28" y="36" fill="rgba(100,160,255,0.5)" fontSize="12" fontFamily="monospace" fontWeight="bold">N↑</text>
+        <text x="28" y="50" fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace">MULTI-FLOOR BLUEPRINT</text>
+        <text x={ISO_CANVAS_W - 16} y={ISO_CANVAS_H - 10} fill="rgba(100,160,255,0.2)" fontSize="8" fontFamily="monospace" textAnchor="end">
+          {activeFloor === 'All' ? `${floorsVisible.length} FLOOR${floorsVisible.length !== 1 ? 'S' : ''}` : activeFloor.toUpperCase()}
+        </text>
+
+        {/* Floor slabs — render bottom to top */}
+        {floorsVisible.map(fi => (
+          <IsoFloorSlab key={`slab-${fi}`} floorIndex={fi} tileW={tileW} tileH={tileH} panX={pan.x} panY={pan.y} zoom={zoom} />
+        ))}
+
+        {/* Staircase connectors between adjacent floors */}
+        {activeFloor === 'All' && allFloorsRange.length > 1 && allFloorsRange.slice(0, -1).map(fi => (
+          <IsoStaircase key={`stair-${fi}`}
+            fromElev={fi * FLOOR_LIFT_PX * zoom} toElev={(fi + 1) * FLOOR_LIFT_PX * zoom}
+            gx={STAIR_GX} gy={STAIR_GY} tileW={tileW} tileH={tileH} wallH={wallH} panX={pan.x} panY={pan.y} />
+        ))}
+
+        {/* Elevator shaft (full height, only when hasElevator and showing all floors) */}
+        {activeFloor === 'All' && hasElevator && allFloorsRange.length > 1 && (
+          <IsoElevator
+            fromElev={minFloor * FLOOR_LIFT_PX * zoom} toElev={maxFloor * FLOOR_LIFT_PX * zoom}
+            gx={ELEV_GX} gy={ELEV_GY} tileW={tileW} tileH={tileH} wallH={wallH} panX={pan.x} panY={pan.y} />
+        )}
+
+        {/* Room boxes */}
+        {sortedRooms.map(room => {
+          const pos = layout[room.id];
+          if (!pos) return null;
+          const fi   = floorIdx(room.floor || 'Ground Floor');
+          const elev = fi * FLOOR_LIFT_PX * zoom;
+          const bp   = CAT_BP_COLOR[room.category] || CAT_BP_COLOR['Classroom'];
+          const dot  = room.status === 'Available' ? '#4ade80' : room.status === 'Occupied' ? '#f87171' : '#fb923c';
+          return (
+            <IsoRoomBox key={room.id}
+              gx={pos.gx} gy={pos.gy} gw={pos.gw} gh={pos.gh}
+              wallH={wallH} floorElev={elev} tileW={tileW} tileH={tileH} panX={pan.x} panY={pan.y}
+              faceColor={bp.fill} rightColor={bp.stroke + 'cc'} leftColor={bp.stroke + '88'} strokeColor={bp.stroke}
+              isSelected={selected === room.id}
+              onClick={() => { if (!isPanning.current) onRoomClick(room); }}
+              onDragStart={e => onDragStart(e, room.id)}
+              onResizeDrag={e => onResizeStart(e, room.id)}>
+              <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
+                <div style={{ fontSize: 9, fontWeight: 800, color: bp.label, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100 }}>{room.name}</div>
+                <div style={{ fontSize: 7.5, color: bp.label, opacity: 0.65, marginTop: 1 }}>{room.category}</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 2 }}>
+                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: dot, flexShrink: 0 }} />
+                  <span style={{ fontSize: 7, color: bp.label, opacity: 0.55 }}>{room.status}</span>
+                </div>
+              </div>
+            </IsoRoomBox>
+          );
+        })}
+      </svg>
     </div>
   );
 }
+
+
+
 
 // ─── ROOM PHOTO MODAL ─────────────────────────────────────────────────────────
 
@@ -657,8 +917,12 @@ function RoomsModule({ notify }) {
     : [...new Set([...FLOORS, ...rooms.filter(r => r.building === activeBuilding).map(r => r.floor).filter(Boolean)])].sort();
   const buildingCount = allBuildings.length;
 
+  const [hasElevator, setHasElevator] = useState(false);
+
   useEffect(() => {
     supabase.from('rooms').select('*').then(({ data }) => { setRooms(data || []); setLoading(false); });
+    supabase.from('schools').select('has_elevator').limit(1).maybeSingle()
+      .then(({ data }) => { if (data?.has_elevator) setHasElevator(true); });
   }, []);
 
   const filtered = rooms.filter(r => {
@@ -875,11 +1139,11 @@ function RoomsModule({ notify }) {
                 </div>
               ))}
             </div>
-            <span style={{ fontSize: 11, color: '#aaa', fontStyle: 'italic' }}>Drag · Resize corner · Click to view</span>
+            <span style={{ fontSize: 11, color: '#aaa', fontStyle: 'italic' }}>Drag room to move · Resize corner dot · Click to view · Drag canvas to pan · Scroll to zoom</span>
           </div>
           {/* Canvas */}
-          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 620, borderRadius: 12 }}>
-            <BlueprintCanvas rooms={activeBuilding === 'All' ? rooms : rooms.filter(r => r.building === activeBuilding)} activeFloor={activeFloor} onRoomClick={setSelectedRoom} />
+          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 860, borderRadius: 12 }}>
+            <BlueprintCanvas rooms={activeBuilding === 'All' ? rooms : rooms.filter(r => r.building === activeBuilding)} activeFloor={activeFloor} onRoomClick={setSelectedRoom} hasElevator={hasElevator} />
           </div>
         </div>
       )}

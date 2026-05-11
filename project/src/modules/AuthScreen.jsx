@@ -5,7 +5,7 @@ import { T } from '../lib/styles';
 import { Field } from '../components/UI';
 import { ROLES, COURSES, YEAR_LEVELS, ROLE_META } from '../lib/constants';
 
-export default function AuthScreen() {
+export default function AuthScreen({ onBack }) {
   const { signIn, signUp, fetchProfile } = useAuth();
   const [mode, setMode] = useState("login");
   const [loginData, setLoginData] = useState({ email: "", password: "" });
@@ -81,6 +81,11 @@ export default function AuthScreen() {
     <div style={{ ...T.root, display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
       <div style={{ width: "100%", maxWidth: 460 }}>
         <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+          {onBack && (
+            <button onClick={onBack} style={{ ...T.btn("ghost"), fontSize: 11, padding: "4px 12px", marginBottom: "1rem" }}>
+              ← Back to Directory
+            </button>
+          )}
           <div style={{ fontSize: 28, fontFamily: "'Fraunces', Georgia, serif", fontWeight: 700, color: "#1a1a2e", marginBottom: 4 }}>SchoolOS</div>
           <p style={{ margin: 0, fontSize: 13, color: "#aaa" }}>Integrated School Management System</p>
         </div>
