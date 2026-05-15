@@ -3,7 +3,7 @@
 // The Rooms tab shows the full 3D view of the school layout, live from Supabase.
 // Admins can add/edit/delete rooms, and the 3D view updates in real time.
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { T } from '../lib/styles';
@@ -37,7 +37,51 @@ function lighten(hex,a=40){
 
 // ─── floor label → numeric index ──────────────────────────────────────────────
 const FLOOR_ORDER = ['Ground Floor','2nd Floor','3rd Floor','4th Floor','5th Floor'];
-function floorIndex(label){ const i=FLOOR_ORDER.indexOf(label); return i>=0?i:0; }
+// Also accept alternate spellings that may come from constants (e.g. 'Ground','1st Floor','2F')
+const FLOOR_ALIASES = {
+  'ground':0,'ground floor':0,'gf':0,'g':0,'1f':0,'1st':0,'1st floor':0,
+  '2nd':1,'2nd floor':1,'2f':1,'second':1,
+  '3rd':2,'3rd floor':2,'3f':2,'third':2,
+  '4th':3,'4th floor':3,'4f':3,'fourth':3,
+  '5th':4,'5th floor':4,'5f':4,'fifth':4,
+};
+function floorIndex(label){
+  if(!label) return 0;
+  const i=FLOOR_ORDER.indexOf(label);
+  if(i>=0) return i;
+  const key=String(label).toLowerCase().trim();
+  if(FLOOR_ALIASES[key]!==undefined) return FLOOR_ALIASES[key];
+  // Try to extract a number from the label
+  const m=key.match(/\d+/);
+  if(m) return Math.max(0,parseInt(m[0],10)-1);
+  return 0;
+}
+
+// ─── ISO BLUEPRINT LAYOUT BRIDGE ──────────────────────────────────────────────
+// The RoomsModule blueprint (Modules.jsx) stores room positions in localStorage
+// under this key as { [roomId]: { gx, gy, gw, gh } } in isometric grid units.
+// The iso canvas grid spans roughly 0–22 (X) × 0–17 (Y) grid units.
+// We bridge these to the 3D world by normalising into the building footprint.
+const _ISO_STORAGE_KEY = 'schoolos_iso_blueprint_layout_v2';
+const ISO_GRID_W = 22;   // matches IsoFloorSlab W constant in Modules.jsx
+const ISO_GRID_H = 17;   // matches IsoFloorSlab D constant in Modules.jsx
+
+function _loadIsoLayout() {
+  try { return JSON.parse(localStorage.getItem(_ISO_STORAGE_KEY) || '{}'); } catch { return {}; }
+}
+
+// Convert iso grid pos {gx,gy,gw,gh} → 3D world coords {x0,z0,x1,z1}
+function isoToWorld(gx, gy, gw, gh) {
+  const scaleX = (BLD.X1 - BLD.X0) / ISO_GRID_W;
+  const scaleZ = (BLD.Z1 - BLD.Z0) / ISO_GRID_H;
+  // Clamp to building interior (exclude stair/elevator nooks via margin)
+  const margin = 0.1;
+  const x0 = Math.max(BLD.X0 + margin, Math.min(BLD.X1 - margin, BLD.X0 + gx * scaleX));
+  const z0 = Math.max(BLD.Z0 + margin, Math.min(BLD.Z1 - margin, BLD.Z0 + gy * scaleZ));
+  const x1 = Math.max(x0 + 0.3, Math.min(BLD.X1 - margin, BLD.X0 + (gx + gw) * scaleX));
+  const z1 = Math.max(z0 + 0.3, Math.min(BLD.Z1 - margin, BLD.Z0 + (gy + gh) * scaleZ));
+  return { x0, z0, x1, z1 };
+}
 
 // ─── 3D CANVAS ENGINE ─────────────────────────────────────────────────────────
 // Building constants — shared across draw + hitTest
@@ -55,8 +99,7 @@ const BLD = {
   EL_X0:  4.2, EL_X1: 6,
   EL_Z0: -4,   EL_Z1: -2,
 };
-// Grid picker cells → world coords
-// Grid is COLS×ROWS mapped to building footprint (excluding stair/elevator nooks)
+// Grid picker cells → world coords (legacy path — used by GridPicker UI only)
 const GRID_COLS = 12, GRID_ROWS = 8;
 function gridToWorld(gx, gz, gw, gd) {
   const scaleX = (BLD.X1 - BLD.X0) / GRID_COLS;
@@ -69,9 +112,62 @@ function gridToWorld(gx, gz, gw, gd) {
   };
 }
 
+// Auto-layout fallback: evenly distribute rooms across the floor grid
+// when no iso layout entry exists for a room.
+function autoLayout(rooms) {
+  const byFloor = {};
+  rooms.forEach(r => {
+    const fi = floorIndex(r.floor || 'Ground Floor');
+    if (!byFloor[fi]) byFloor[fi] = [];
+    byFloor[fi].push(r);
+  });
+  const result = {};
+  Object.values(byFloor).forEach(fRooms => {
+    fRooms.forEach((r, i) => {
+      result[r.id] = {
+        gx: (i % 5) * (ISO_GRID_W / 5) + 1,
+        gy: Math.floor(i / 5) * (ISO_GRID_H / 4) + 1,
+        gw: 3.5,
+        gh: 3.0,
+      };
+    });
+  });
+  return result;
+}
+
 function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
   const canvasRef = useRef(null);
-  const stateRef  = useRef({ rotX:0.38, rotY:0.55, zoom:36, drag:false, lx:0, ly:0, panX:0, panY:0, panMode:false, touchMode:null });
+  const stateRef  = useRef({ rotX:0.38, rotY:0.55, zoom:5.5, drag:false, lx:0, ly:0, panX:0, panY:0, panMode:false, touchMode:null });
+
+  // ── ISO layout bridge: read positions from RoomsModule's blueprint localStorage
+  const [isoLayout, setIsoLayout] = useState(() => _loadIsoLayout());
+
+  // Refresh when localStorage changes (user drags rooms in RoomsModule blueprint)
+  useEffect(() => {
+    function onStorage(e) {
+      if (e.key === _ISO_STORAGE_KEY || e.key === null) {
+        setIsoLayout(_loadIsoLayout());
+      }
+    }
+    window.addEventListener('storage', onStorage);
+    // Poll every 2 s to catch same-tab changes (storage event only fires cross-tab)
+    const timer = setInterval(() => setIsoLayout(_loadIsoLayout()), 2000);
+    return () => { window.removeEventListener('storage', onStorage); clearInterval(timer); };
+  }, []);
+
+  // Auto-fallback positions for rooms not yet in the iso layout
+  const fallback = useMemo(() => autoLayout(rooms), [rooms]);
+
+  // Resolve world coords for a room — iso layout first, then fallback, then legacy DB cols
+  const resolveWorld = useCallback((room) => {
+    const pos = isoLayout[room.id] || fallback[room.id];
+    if (pos) return isoToWorld(pos.gx, pos.gy, pos.gw, pos.gh);
+    return gridToWorld(
+      Number(room.grid_x)||0, Number(room.grid_z)||0,
+      Number(room.grid_w)||2, Number(room.grid_d)||2
+    );
+  }, [isoLayout, fallback]);
+
   // All floor indices that have rooms OR exist (to draw empty floors as shell)
   const allFloorNums = useCallback(() => {
     const nums = new Set(rooms.map(r => floorIndex(r.floor || 'Ground Floor')));
@@ -111,8 +207,8 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
       const cx=Math.cos(rotY),sx=Math.sin(rotY);
       const cz=Math.cos(rotX),sz=Math.sin(rotX);
       const x2=x*cx-z*sx, z2=x*sx+z*cx;
-      const y2=y*cz-z2*sz, z3=y*sz+z2*cz;
-      const s=zoom/(zoom*0.18+z3*0.01);
+      const y2=y*cz-z2*sz;
+      const s=zoom;
       return [W/2+x2*s+stateRef.current.panX, H*0.52-y2*s+stateRef.current.panY];
     }
 
@@ -133,38 +229,56 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
       face(pts, fill, stroke, alpha);
     }
 
-    const totalH = fNums.length * STORY; // full building height
+    const maxFloorIdx = fNums.length > 0 ? Math.max(...fNums) : 0;
+    const totalH = (maxFloorIdx + 1) * STORY; // full building height
 
-    // ── 1. SHARED OUTER SHELL WALLS (drawn back-to-front once) ────────────────
-    // We draw the four outer wall faces of the whole building as one solid mass,
-    // then punch rooms into each floor on top of the slab.
-    // Bottom of building
+    // ── 1. BACK + LEFT SHELL WALLS ONLY (never occlude rooms) ────────────────
+    // Only draw the rear-facing walls (back Z0 and left X0).
+    // Front (Z1) and right (X1) walls are omitted so rooms on all floors
+    // remain visible from the default camera angle.
     const yBase = 0, yTop = yBase + totalH;
+    const wallLeft = '#d4d0c8', wallBack = '#bfbbb3';
+    const roofCol  = '#d8d5cf';
 
-    // Outer wall colours
-    const wallFront = '#c9c5bc', wallRight = '#b8b4ab', wallLeft = '#d4d0c8', wallBack = '#bfbbb3';
-    const roofCol   = '#d8d5cf';
-
-    // Back-left wall (Z0 face: viewer sees it if rotY is in range)
     const bTL=project(X0,yBase,Z0), bTR=project(X1,yBase,Z0);
     const bBL=project(X0,yBase,Z1), bBR=project(X1,yBase,Z1);
     const tTL=project(X0,yTop, Z0), tTR=project(X1,yTop, Z0);
     const tBL=project(X0,yTop, Z1), tBR=project(X1,yTop, Z1);
 
-    // Draw in painter's order: furthest faces first
-    // Back face (Z0)
-    face([bTL,bTR,tTR,tTL], wallBack, 'rgba(0,0,0,0.10)');
-    // Left face (X0)
-    face([bTL,bBL,tBL,tTL], wallLeft, 'rgba(0,0,0,0.08)');
-    // Right face (X1)
-    face([bTR,bBR,tBR,tTR], wallRight,'rgba(0,0,0,0.12)');
-    // Front face (Z1)
-    face([bBL,bBR,tBR,tBL], wallFront,'rgba(0,0,0,0.07)');
+    // Back face (Z0) — always behind rooms
+    face([bTL,bTR,tTR,tTL], wallBack, 'rgba(0,0,0,0.10)', 0.75);
+    // Left face (X0) — always behind rooms for default rotY
+    face([bTL,bBL,tBL,tTL], wallLeft, 'rgba(0,0,0,0.08)', 0.75);
 
-    // ── 2. FLOOR SLABS + ROOMS per floor ──────────────────────────────────────
-    for(const fi of fNums){
+    // ── 2. FLOOR SLABS + ROOMS per floor (draw highest first → ground last = in front) ──
+    for(const fi of [...fNums].reverse()){
       const fy = fi * STORY; // bottom of this floor's interior
       const rms = fMap[fi] || [];
+
+      // ── Per-floor front & right edge lines (structural guides, not solid walls) ──
+      {
+        const yBot = fy, yTop2 = fy + WALL;
+        // Front-right corner vertical
+        const fr0=project(X1,yBot,Z1), fr1=project(X1,yTop2,Z1);
+        // Front edge bottom & top
+        const fl0=project(X0,yBot,Z1), ft0=project(X0,yTop2,Z1);
+        const frb=project(X1,yBot,Z1), frt=project(X1,yTop2,Z1);
+        // Right edge
+        const rb0=project(X1,yBot,Z0), rt0=project(X1,yTop2,Z0);
+        ctx.save();
+        ctx.strokeStyle='rgba(160,155,148,0.30)'; ctx.lineWidth=0.8; ctx.setLineDash([]);
+        // front bottom edge
+        ctx.beginPath(); ctx.moveTo(fl0[0],fl0[1]); ctx.lineTo(frb[0],frb[1]); ctx.stroke();
+        // front top edge  
+        ctx.beginPath(); ctx.moveTo(ft0[0],ft0[1]); ctx.lineTo(frt[0],frt[1]); ctx.stroke();
+        // right bottom edge
+        ctx.beginPath(); ctx.moveTo(frb[0],frb[1]); ctx.lineTo(rb0[0],rb0[1]); ctx.stroke();
+        // right top edge
+        ctx.beginPath(); ctx.moveTo(frt[0],frt[1]); ctx.lineTo(rt0[0],rt0[1]); ctx.stroke();
+        // front-right corner vertical
+        ctx.beginPath(); ctx.moveTo(fr0[0],fr0[1]); ctx.lineTo(fr1[0],fr1[1]); ctx.stroke();
+        ctx.restore();
+      }
 
       // ── Floor slab top surface ──────────────────────────────────────────────
       const sy = fy; // slab surface
@@ -184,7 +298,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
       {
         const lp=project(X0-0.3, fy+WALL*0.5, Z0);
         ctx.save();
-        ctx.font=`600 ${Math.max(9,zoom*0.26)}px system-ui,sans-serif`;
+        ctx.font=`600 ${Math.max(9,zoom*2.6)}px system-ui,sans-serif`;
         ctx.fillStyle='rgba(80,76,70,0.75)';
         ctx.textAlign='right';
         ctx.fillText(FLOOR_ORDER[fi]||`Floor ${fi}`, lp[0]-4, lp[1]);
@@ -227,7 +341,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
         const lx=(At[0]+Bt[0]+Ct[0]+Dt[0])/4;
         const ly=(At[1]+Bt[1]+Ct[1]+Dt[1])/4;
         ctx.save();
-        ctx.font=`500 ${Math.max(7,zoom*0.2)}px system-ui`;
+        ctx.font=`500 ${Math.max(7,zoom*2.0)}px system-ui`;
         ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText('🪜 Stairs', lx, ly);
         ctx.restore();
@@ -258,7 +372,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
         const lx=(At[0]+Bt[0]+Ct[0]+Dt[0])/4;
         const ly=(At[1]+Bt[1]+Ct[1]+Dt[1])/4;
         ctx.save();
-        ctx.font=`500 ${Math.max(7,zoom*0.2)}px system-ui`;
+        ctx.font=`500 ${Math.max(7,zoom*2.0)}px system-ui`;
         ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText('🛗 Lift', lx, ly);
         ctx.restore();
@@ -266,11 +380,10 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
 
       // ── Rooms ───────────────────────────────────────────────────────────────
       // Painter's sort: rooms farther from camera (in projected depth) go first
+      // Uses resolveWorld() which reads positions from the iso blueprint localStorage layout
       const sorted=[...rms].sort((a,b)=>{
         const depth=(r)=>{
-          const gx=Number(r.grid_x)||0, gz=Number(r.grid_z)||0;
-          const gw=Number(r.grid_w)||2, gd=Number(r.grid_d)||2;
-          const w=gridToWorld(gx,gz,gw,gd);
+          const w=resolveWorld(r);
           const cx=(w.x0+w.x1)/2, cz=(w.z0+w.z1)/2;
           return cz*Math.cos(rotY)+cx*Math.sin(rotY);
         };
@@ -278,11 +391,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
       });
 
       for(const room of sorted){
-        const gx=Number(room.grid_x)||0;
-        const gz=Number(room.grid_z)||0;
-        const gw=Number(room.grid_w)||2;
-        const gd=Number(room.grid_d)||2;
-        const { x0,z0,x1,z1 } = gridToWorld(gx,gz,gw,gd);
+        const { x0,z0,x1,z1 } = resolveWorld(room);
         const y0=fy, y1=fy+WALL;
 
         const isSelected=room.id===selectedId;
@@ -332,7 +441,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
         // label on top face
         const lcx=(TLt[0]+TRt[0]+BRt[0]+BLt[0])/4;
         const lcy=(TLt[1]+TRt[1]+BRt[1]+BLt[1])/4;
-        const fs=Math.max(7,Math.min(11,zoom*0.24));
+        const fs=Math.max(7,Math.min(11,zoom*2.4));
         ctx.save();
         ctx.globalAlpha=0.96;
         ctx.font=`600 ${fs}px system-ui,sans-serif`;
@@ -346,7 +455,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
 
     // ── 3. ROOF SLAB ──────────────────────────────────────────────────────────
     {
-      const yR = fNums.length * STORY; // roof sits on top of last floor
+      const yR = (maxFloorIdx + 1) * STORY; // roof sits on top of last floor
       const roofTL=project(X0,yR,Z0), roofTR=project(X1,yR,Z0);
       const roofBL=project(X0,yR,Z1), roofBR=project(X1,yR,Z1);
       face([roofTL,roofTR,roofBR,roofBL], roofCol, 'rgba(0,0,0,0.10)', 0.90);
@@ -371,7 +480,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
       ctx.fillText('E',cx+10,cy); ctx.fillText('W',cx-10,cy);
       ctx.restore();
     }
-  }, [allFloorNums, floorMap, selectedId, hasElevator]);
+  }, [allFloorNums, floorMap, resolveWorld, selectedId, hasElevator]);
 
   // Hit-test the top face of each room
   function hitTest(mx,my){
@@ -386,8 +495,8 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
       const cx=Math.cos(rotY),sx=Math.sin(rotY);
       const cz=Math.cos(rotX),sz=Math.sin(rotX);
       const x2=x*cx-z*sx; const z2=x*sx+z*cx;
-      const y2=y*cz-z2*sz; const z3=y*sz+z2*cz;
-      const s=zoom/(zoom*0.18+z3*0.01);
+      const y2=y*cz-z2*sz;
+      const s=zoom;
       return[W/2+x2*s+stateRef.current.panX, H*0.52-y2*s+stateRef.current.panY];
     }
     function pip(px,py,poly){
@@ -402,9 +511,7 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
     for(const fi of fNums){
       const fy=fi*STORY;
       for(const room of (fMap[fi]||[])){
-        const gx=Number(room.grid_x)||0, gz=Number(room.grid_z)||0;
-        const gw=Number(room.grid_w)||2, gd=Number(room.grid_d)||2;
-        const { x0,z0,x1,z1 } = gridToWorld(gx,gz,gw,gd);
+        const { x0,z0,x1,z1 } = resolveWorld(room);
         const y1=fy+WALL;
         const tlt=project(x0,y1,z0),trt=project(x1,y1,z0);
         const brt=project(x1,y1,z1),blt=project(x0,y1,z1);
@@ -469,7 +576,10 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
     }
     if(e.touches.length===2){
       stateRef.current.drag=true;
-      stateRef.current.touchMode='pan';
+      stateRef.current.touchMode='pinch';
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      stateRef.current.pinchDist=Math.hypot(dx,dy);
       const x=(e.touches[0].clientX+e.touches[1].clientX)/2;
       const y=(e.touches[0].clientY+e.touches[1].clientY)/2;
       stateRef.current.lx=x;
@@ -484,19 +594,26 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
 
     const onWheel = (e) => {
       e.preventDefault();
-      stateRef.current.zoom=Math.max(18,Math.min(90,stateRef.current.zoom-e.deltaY*0.05));
+      stateRef.current.zoom=Math.max(2, Math.min(20, stateRef.current.zoom - e.deltaY*0.005));
       draw();
     };
 
     const onTouchMove = (e) => {
       if(!stateRef.current.drag) return;
-      if(stateRef.current.touchMode==='pan' && e.touches.length>=2){
+      if(stateRef.current.touchMode==='pinch' && e.touches.length>=2){
         e.preventDefault();
+        const dx=e.touches[0].clientX-e.touches[1].clientX;
+        const dy=e.touches[0].clientY-e.touches[1].clientY;
+        const dist=Math.hypot(dx,dy);
+        const prev=stateRef.current.pinchDist||dist;
+        const scale=(dist-prev)*0.05;
+        stateRef.current.zoom=Math.max(2,Math.min(20,stateRef.current.zoom+scale));
+        stateRef.current.pinchDist=dist;
+        // also pan with midpoint
         const x=(e.touches[0].clientX+e.touches[1].clientX)/2;
         const y=(e.touches[0].clientY+e.touches[1].clientY)/2;
-        const dx=x-stateRef.current.lx, dy=y-stateRef.current.ly;
-        stateRef.current.panX += dx;
-        stateRef.current.panY += dy;
+        stateRef.current.panX += x-stateRef.current.lx;
+        stateRef.current.panY += y-stateRef.current.ly;
         stateRef.current.lx=x;
         stateRef.current.ly=y;
         draw();
@@ -521,13 +638,34 @@ function Blueprint3D({ rooms, selectedId, onSelect, hasElevator }){
   }, [draw]);
 
   return (
-    <canvas ref={canvasRef}
-      style={{ display:'block', width:'100%', cursor:'grab', borderRadius:12 }}
-      onMouseDown={onMouseDown} onMouseUp={onMouseUp} onMouseMove={onMouseMove}
-      onMouseLeave={onMouseUp} onClick={onClick}
-      onContextMenu={e => e.preventDefault()}
-      onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}
-    />
+    <div style={{ position:'relative' }}>
+      <canvas ref={canvasRef}
+        style={{ display:'block', width:'100%', cursor:'grab', borderRadius:12 }}
+        onMouseDown={onMouseDown} onMouseUp={onMouseUp} onMouseMove={onMouseMove}
+        onMouseLeave={onMouseUp} onClick={onClick}
+        onContextMenu={e => e.preventDefault()}
+        onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}
+      />
+      {/* Zoom controls */}
+      <div style={{ position:'absolute', bottom:12, right:12, display:'flex', flexDirection:'column', gap:4, zIndex:10 }}>
+        {[
+          { label:'+', delta:0.8 },
+          { label:'−', delta:-0.8 },
+          { label:'⟳', reset:true },
+        ].map(btn=>(
+          <button
+            key={btn.label}
+            onMouseDown={e=>e.stopPropagation()}
+            onClick={e=>{ e.stopPropagation();
+              if(btn.reset){ stateRef.current.zoom=5.5; stateRef.current.panX=0; stateRef.current.panY=0; stateRef.current.rotX=0.38; stateRef.current.rotY=0.55; }
+              else stateRef.current.zoom=Math.max(2,Math.min(20,stateRef.current.zoom+btn.delta));
+              draw();
+            }}
+            style={{ width:32, height:32, borderRadius:8, border:'1px solid #e8e6e0', background:'rgba(255,255,255,0.92)', color:'#1a1a2e', fontSize:btn.reset?13:18, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 1px 4px rgba(0,0,0,0.10)', backdropFilter:'blur(4px)', lineHeight:1 }}
+          >{btn.label}</button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -695,7 +833,7 @@ function RoomsTab({ schoolId, notify }){
     setLoading(true);
     const [{ data: roomData }, { data: school }] = await Promise.all([
       supabase.from('rooms').select('*').eq('school_id',schoolId).order('floor').order('name'),
-      supabase.from('schools').select('has_elevator').eq('id',schoolId).maybeSingle(),
+      supabase.from('schools').select('*').eq('id',schoolId).maybeSingle(),
     ]);
     setRooms(roomData||[]);
     setHasElevator(!!school?.has_elevator);
@@ -894,7 +1032,7 @@ function RoomsTab({ schoolId, notify }){
               ))}
             </div>
             <div style={{ fontSize:11, color:'#bbb', textAlign:'center', marginTop:4 }}>
-              Left-drag to rotate · Right/middle-drag to pan · Scroll to zoom · Click to select
+              Left-drag to rotate · Right/middle-drag to pan · Scroll to zoom · Click to select  —  Layout synced with Blueprint module
             </div>
           </div>
         ) : (

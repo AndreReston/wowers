@@ -595,11 +595,25 @@ function IsoFloorSlab({ floorIndex: fi, tileW, tileH, panX, panY, zoom }) {
   );
 }
 
+// ─── BUILDING PALETTE for labels ─────────────────────────────────────────────
+const BUILDING_LABEL_COLORS = [
+  'rgba(100,180,255,0.85)',
+  'rgba(180,255,160,0.85)',
+  'rgba(255,200,100,0.85)',
+  'rgba(255,140,180,0.85)',
+  'rgba(160,220,255,0.85)',
+  'rgba(200,170,255,0.85)',
+];
+
+// Per-building canvas width in grid units (buildings are spaced apart)
+const BUILDING_GRID_W = 24; // grid columns reserved per building
+const BUILDING_GRID_OFFSET_Y = 0; // all buildings share same gy origin
+
 function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
   const [layout, setLayout] = useState(_loadIsoLayout);
   const [selected, setSelected] = useState(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(0.85);
+  const [zoom, setZoom] = useState(0.7);
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
   const panRef = useRef(null);
@@ -607,7 +621,7 @@ function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
   const isPanning = useRef(false);
   const [panCursor, setPanCursor] = useState(false);
 
-  const MIN_ZOOM = 0.3, MAX_ZOOM = 1.8;
+  const MIN_ZOOM = 0.2, MAX_ZOOM = 1.8;
   const SNAP_G = 0.5;
   const MIN_GW = 1, MIN_GH = 1, MAX_GW = 8, MAX_GH = 8;
 
@@ -617,6 +631,10 @@ function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
 
   const { screenToGridDelta } = makeFloorIso(tileW, tileH, pan.x, pan.y);
 
+  // ── Group rooms by building ──────────────────────────────────────────────────
+  const allBuildingNames = [...new Set(rooms.map(r => r.building || 'Main Building'))].sort();
+
+  // Global floor range (across all buildings, for legend)
   const allFloorLabels = [...new Set(rooms.map(r => r.floor || 'Ground Floor'))];
   const allFloorIdxs   = allFloorLabels.map(floorIdx);
   const minFloor = allFloorIdxs.length > 0 ? Math.min(...allFloorIdxs) : 0;
@@ -627,18 +645,24 @@ function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
     setLayout(prev => {
       const next = { ...prev };
       let changed = false;
-      const byFloor = {};
-      rooms.forEach(r => {
-        const fi = floorIdx(r.floor || 'Ground Floor');
-        if (!byFloor[fi]) byFloor[fi] = [];
-        byFloor[fi].push(r);
-      });
-      Object.values(byFloor).forEach(fRooms => {
-        fRooms.forEach((r, i) => {
-          if (!next[r.id]) {
-            next[r.id] = { gx: (i % 5) * 3.5 + 1, gy: Math.floor(i / 5) * 3.5 + 1, gw: 2.5, gh: 2 };
-            changed = true;
-          }
+      // Lay out rooms per building, each building gets its own gx offset
+      allBuildingNames.forEach((bldg, bldgIdx) => {
+        const bldgRooms = rooms.filter(r => (r.building || 'Main Building') === bldg);
+        const byFloor = {};
+        bldgRooms.forEach(r => {
+          const fi = floorIdx(r.floor || 'Ground Floor');
+          if (!byFloor[fi]) byFloor[fi] = [];
+          byFloor[fi].push(r);
+        });
+        Object.values(byFloor).forEach(fRooms => {
+          fRooms.forEach((r, i) => {
+            if (!next[r.id]) {
+              // Place within this building's grid column band
+              const bldgOffsetGx = bldgIdx * BUILDING_GRID_W;
+              next[r.id] = { gx: bldgOffsetGx + (i % 4) * 4 + 1, gy: Math.floor(i / 4) * 3.5 + 1, gw: 3, gh: 2.5 };
+              changed = true;
+            }
+          });
         });
       });
       if (changed) _saveIsoLayout(next);
@@ -703,30 +727,86 @@ function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
     return () => el.removeEventListener('wheel', onWheel);
   }, [onWheel]);
 
-  const visibleRooms = activeFloor === 'All' ? rooms : rooms.filter(r => r.floor === activeFloor);
-  const floorsVisible = activeFloor === 'All' ? allFloorsRange : [floorIdx(activeFloor)];
-
-  const sortedRooms = [...visibleRooms].sort((a, b) => {
-    const fA = floorIdx(a.floor || 'Ground Floor'), fB = floorIdx(b.floor || 'Ground Floor');
-    if (fA !== fB) return fA - fB;
-    const pa = layout[a.id], pb = layout[b.id];
-    if (!pa || !pb) return 0;
-    return (pa.gx + pa.gy) - (pb.gx + pb.gy);
+  // ── Per-building derived data ─────────────────────────────────────────────
+  // Each building gets its own floor range and room list
+  const buildingData = allBuildingNames.map((bldgName, bldgIdx) => {
+    const bldgRooms = rooms.filter(r => (r.building || 'Main Building') === bldgName);
+    const visibleBldgRooms = activeFloor === 'All'
+      ? bldgRooms
+      : bldgRooms.filter(r => r.floor === activeFloor);
+    const bldgFloorLabels = [...new Set(bldgRooms.map(r => r.floor || 'Ground Floor'))];
+    const bldgFloorIdxs = bldgFloorLabels.map(floorIdx);
+    const bldgMinFloor = bldgFloorIdxs.length > 0 ? Math.min(...bldgFloorIdxs) : 0;
+    const bldgMaxFloor = bldgFloorIdxs.length > 0 ? Math.max(...bldgFloorIdxs) : 0;
+    const bldgFloorsRange = Array.from({ length: bldgMaxFloor - bldgMinFloor + 1 }, (_, i) => bldgMinFloor + i);
+    const floorsVisible = activeFloor === 'All' ? bldgFloorsRange : [floorIdx(activeFloor)].filter(fi => bldgFloorsRange.includes(fi));
+    // gx offset for this building's slab (in grid units)
+    const gxOffset = bldgIdx * BUILDING_GRID_W;
+    const labelColor = BUILDING_LABEL_COLORS[bldgIdx % BUILDING_LABEL_COLORS.length];
+    const sortedRooms = [...visibleBldgRooms].sort((a, b) => {
+      const fA = floorIdx(a.floor || 'Ground Floor'), fB = floorIdx(b.floor || 'Ground Floor');
+      if (fA !== fB) return fA - fB;
+      const pa = layout[a.id], pb = layout[b.id];
+      if (!pa || !pb) return 0;
+      return (pa.gx + pa.gy) - (pb.gx + pb.gy);
+    });
+    return { bldgName, bldgIdx, gxOffset, bldgFloorsRange, floorsVisible, bldgMinFloor, bldgMaxFloor, sortedRooms, labelColor };
   });
 
-  const STAIR_GX = 19, STAIR_GY = 1;
-  const ELEV_GX  = 19, ELEV_GY  = 4;
+  const floorsVisibleGlobal = activeFloor === 'All' ? allFloorsRange : [floorIdx(activeFloor)];
+
+  const STAIR_GX_LOCAL = 19, STAIR_GY = 1;
+  const ELEV_GX_LOCAL  = 19, ELEV_GY  = 4;
+
+  // Canvas width scales with number of buildings
+  const canvasW = Math.max(ISO_CANVAS_W, allBuildingNames.length * 700);
+  const canvasH = ISO_CANVAS_H;
 
   const _pbs = { width: '100%', height: '100%', border: 'none', borderRadius: 6, background: 'rgba(100,160,255,0.1)', color: 'rgba(100,160,255,0.6)', cursor: 'pointer', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit', padding: 0 };
 
+  // IsoFloorSlab with gx offset for per-building placement
+  function IsoFloorSlabOffset({ floorIndex: fi, tileW, tileH, panX, panY, zoom, gxOffset }) {
+    const { project } = makeFloorIso(tileW, tileH, panX, panY);
+    const elev  = fi * FLOOR_LIFT_PX * zoom;
+    const slabH = 6 * zoom;
+    const W = 20, D = 14;
+    const ox = gxOffset;
+    const tl = project(ox,     0, elev); const tr = project(ox + W, 0, elev);
+    const br = project(ox + W, D, elev); const bl = project(ox,     D, elev);
+    const topPts   = `${tl.sx},${tl.sy} ${tr.sx},${tr.sy} ${br.sx},${br.sy} ${bl.sx},${bl.sy}`;
+    const rightPts = `${tr.sx},${tr.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + slabH} ${tr.sx},${tr.sy + slabH}`;
+    const leftPts  = `${bl.sx},${bl.sy} ${br.sx},${br.sy} ${br.sx},${br.sy + slabH} ${bl.sx},${bl.sy + slabH}`;
+    const labelP = project(ox, D / 2, elev);
+    const floorLabel = FLOOR_LABEL_ORDER[fi] || `Floor ${fi}`;
+    return (
+      <g>
+        {Array.from({ length: W + 1 }, (_, i) => {
+          const a = project(ox + i, 0, elev), b = project(ox + i, D, elev);
+          return <line key={`gx${fi}-${i}`} x1={a.sx} y1={a.sy} x2={b.sx} y2={b.sy} stroke="rgba(100,160,255,0.05)" strokeWidth="0.7" />;
+        })}
+        {Array.from({ length: D + 1 }, (_, j) => {
+          const a = project(ox, j, elev), b = project(ox + W, j, elev);
+          return <line key={`gy${fi}-${j}`} x1={a.sx} y1={a.sy} x2={b.sx} y2={b.sy} stroke="rgba(100,160,255,0.05)" strokeWidth="0.7" />;
+        })}
+        <polygon points={rightPts} fill="rgba(20,50,100,0.55)"  stroke="rgba(60,120,200,0.2)"  strokeWidth="0.5" />
+        <polygon points={leftPts}  fill="rgba(15,40,80,0.55)"   stroke="rgba(60,120,200,0.2)"  strokeWidth="0.5" />
+        <polygon points={topPts}   fill="rgba(15,30,62,0.45)"   stroke="rgba(60,120,200,0.18)" strokeWidth="0.8" />
+        <text x={labelP.sx - 6} y={labelP.sy} fill="rgba(100,160,255,0.4)" fontSize="8" fontFamily="monospace" fontWeight="bold" textAnchor="end">
+          {floorLabel.toUpperCase()}
+        </text>
+      </g>
+    );
+  }
+
   return (
     <div style={{ position: 'relative' }}>
+      {/* ── HUD Controls ──────────────────────────────────────────────────── */}
       <div style={{ position: 'absolute', top: 12, right: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: '5px 8px', border: '1px solid rgba(100,160,255,0.2)' }}>
           <button onClick={() => setZoom(z => Math.max(MIN_ZOOM, +(z - 0.1).toFixed(2)))} style={{ ..._pbs, width: 24, height: 24, fontSize: 14 }}>−</button>
           <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(100,160,255,0.7)', minWidth: 36, textAlign: 'center', fontFamily: 'monospace' }}>{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom(z => Math.min(MAX_ZOOM, +(z + 0.1).toFixed(2)))} style={{ ..._pbs, width: 24, height: 24, fontSize: 14 }}>+</button>
-          <button onClick={() => { setZoom(0.85); setPan({ x: 0, y: 0 }); }} style={{ ..._pbs, width: 24, height: 24, fontSize: 9 }}>⌂</button>
+          <button onClick={() => { setZoom(0.7); setPan({ x: 0, y: 0 }); }} style={{ ..._pbs, width: 24, height: 24, fontSize: 9 }}>⌂</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '28px 28px 28px', gridTemplateRows: '28px 28px 28px', gap: 2, background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: 5, border: '1px solid rgba(100,160,255,0.2)' }}>
           <div /><button onClick={() => setPan(p => ({ ...p, y: p.y + 80 }))} style={_pbs}>▲</button><div />
@@ -735,8 +815,21 @@ function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
           <button onClick={() => setPan(p => ({ ...p, x: p.x - 80 }))} style={_pbs}>▶</button>
           <div /><button onClick={() => setPan(p => ({ ...p, y: p.y - 80 }))} style={_pbs}>▼</button><div />
         </div>
+
+        {/* Building index legend */}
+        <div style={{ background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: '8px 12px', border: '1px solid rgba(100,160,255,0.2)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <span style={{ fontSize: 9, color: 'rgba(100,160,255,0.5)', fontFamily: 'monospace', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 2 }}>BUILDINGS</span>
+          {buildingData.map(({ bldgName, bldgIdx, labelColor }) => (
+            <div key={bldgName} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ width: 10, height: 10, borderRadius: 2, background: labelColor, opacity: 0.7, flexShrink: 0 }} />
+              <span style={{ fontSize: 9, color: labelColor, fontFamily: 'monospace', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bldgName}</span>
+            </div>
+          ))}
+        </div>
+
         {allFloorsRange.length > 0 && (
           <div style={{ background: 'rgba(10,22,40,0.88)', borderRadius: 10, padding: '7px 10px', border: '1px solid rgba(100,160,255,0.2)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 9, color: 'rgba(100,160,255,0.5)', fontFamily: 'monospace', fontWeight: 700, letterSpacing: '0.08em', marginBottom: 2 }}>FLOORS</span>
             {[...allFloorsRange].reverse().map(fi => (
               <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <div style={{ width: 8, height: 8, borderRadius: 2, background: `rgba(100,160,255,${0.2 + fi * 0.12})`, border: '1px solid rgba(100,160,255,0.4)' }} />
@@ -762,61 +855,89 @@ function BlueprintCanvas({ rooms, onRoomClick, activeFloor, hasElevator }) {
         </div>
       </div>
 
-      <svg ref={svgRef} width={ISO_CANVAS_W} height={ISO_CANVAS_H}
+      <svg ref={svgRef} width={canvasW} height={canvasH}
         style={{ background: '#080f1e', borderRadius: 12, border: '1.5px solid #1e3a5f', boxShadow: '0 8px 40px #00000090', display: 'block', userSelect: 'none', cursor: panCursor ? 'grabbing' : 'grab' }}
         onMouseDown={onPanStart}>
 
         <text x="28" y="36" fill="rgba(100,160,255,0.5)" fontSize="12" fontFamily="monospace" fontWeight="bold">N↑</text>
-        <text x="28" y="50" fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace">MULTI-FLOOR BLUEPRINT</text>
-        <text x={ISO_CANVAS_W - 16} y={ISO_CANVAS_H - 10} fill="rgba(100,160,255,0.2)" fontSize="8" fontFamily="monospace" textAnchor="end">
-          {activeFloor === 'All' ? `${floorsVisible.length} FLOOR${floorsVisible.length !== 1 ? 'S' : ''}` : activeFloor.toUpperCase()}
+        <text x="28" y="50" fill="rgba(100,160,255,0.25)" fontSize="8" fontFamily="monospace">
+          CAMPUS BLUEPRINT · {allBuildingNames.length} BUILDING{allBuildingNames.length !== 1 ? 'S' : ''}
         </text>
 
-        {/* Floor slabs — render bottom to top */}
-        {floorsVisible.map(fi => (
-          <IsoFloorSlab key={`slab-${fi}`} floorIndex={fi} tileW={tileW} tileH={tileH} panX={pan.x} panY={pan.y} zoom={zoom} />
-        ))}
-
-        {/* Staircase connectors between adjacent floors */}
-        {activeFloor === 'All' && allFloorsRange.length > 1 && allFloorsRange.slice(0, -1).map(fi => (
-          <IsoStaircase key={`stair-${fi}`}
-            fromElev={fi * FLOOR_LIFT_PX * zoom} toElev={(fi + 1) * FLOOR_LIFT_PX * zoom}
-            gx={STAIR_GX} gy={STAIR_GY} tileW={tileW} tileH={tileH} wallH={wallH} panX={pan.x} panY={pan.y} />
-        ))}
-
-        {/* Elevator shaft (full height, only when hasElevator and showing all floors) */}
-        {activeFloor === 'All' && hasElevator && allFloorsRange.length > 1 && (
-          <IsoElevator
-            fromElev={minFloor * FLOOR_LIFT_PX * zoom} toElev={maxFloor * FLOOR_LIFT_PX * zoom}
-            gx={ELEV_GX} gy={ELEV_GY} tileW={tileW} tileH={tileH} wallH={wallH} panX={pan.x} panY={pan.y} />
-        )}
-
-        {/* Room boxes */}
-        {sortedRooms.map(room => {
-          const pos = layout[room.id];
-          if (!pos) return null;
-          const fi   = floorIdx(room.floor || 'Ground Floor');
-          const elev = fi * FLOOR_LIFT_PX * zoom;
-          const bp   = CAT_BP_COLOR[room.category] || CAT_BP_COLOR['Classroom'];
-          const dot  = room.status === 'Available' ? '#4ade80' : room.status === 'Occupied' ? '#f87171' : '#fb923c';
+        {/* ── Render each building independently ──────────────────────────── */}
+        {buildingData.map(({ bldgName, bldgIdx, gxOffset, bldgFloorsRange, floorsVisible, bldgMinFloor, bldgMaxFloor, sortedRooms, labelColor }) => {
+          const STAIR_GX = gxOffset + STAIR_GX_LOCAL;
+          const ELEV_GX  = gxOffset + ELEV_GX_LOCAL;
           return (
-            <IsoRoomBox key={room.id}
-              gx={pos.gx} gy={pos.gy} gw={pos.gw} gh={pos.gh}
-              wallH={wallH} floorElev={elev} tileW={tileW} tileH={tileH} panX={pan.x} panY={pan.y}
-              faceColor={bp.fill} rightColor={bp.stroke + 'cc'} leftColor={bp.stroke + '88'} strokeColor={bp.stroke}
-              isSelected={selected === room.id}
-              onClick={() => { if (!isPanning.current) onRoomClick(room); }}
-              onDragStart={e => onDragStart(e, room.id)}
-              onResizeDrag={e => onResizeStart(e, room.id)}>
-              <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
-                <div style={{ fontSize: 9, fontWeight: 800, color: bp.label, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100 }}>{room.name}</div>
-                <div style={{ fontSize: 7.5, color: bp.label, opacity: 0.65, marginTop: 1 }}>{room.category}</div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 2 }}>
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: dot, flexShrink: 0 }} />
-                  <span style={{ fontSize: 7, color: bp.label, opacity: 0.55 }}>{room.status}</span>
-                </div>
-              </div>
-            </IsoRoomBox>
+            <g key={bldgName}>
+              {/* Building label above the top floor */}
+              {(() => {
+                const topFi = bldgFloorsRange[bldgFloorsRange.length - 1] ?? 0;
+                const elev  = topFi * FLOOR_LIFT_PX * zoom;
+                const { project } = makeFloorIso(tileW, tileH, pan.x, pan.y);
+                const mid   = project(gxOffset + 10, 0, elev + wallH + 18 * zoom);
+                return (
+                  <text x={mid.sx} y={mid.sy}
+                    fill={labelColor} fontSize="13" fontFamily="monospace" fontWeight="bold"
+                    textAnchor="middle"
+                    style={{ pointerEvents: 'none', textShadow: '0 2px 6px #000' }}>
+                    {bldgName.toUpperCase()}
+                  </text>
+                );
+              })()}
+
+              {/* Floor slabs for this building */}
+              {floorsVisible.map(fi => (
+                <IsoFloorSlabOffset key={`slab-${bldgName}-${fi}`} floorIndex={fi}
+                  tileW={tileW} tileH={tileH} panX={pan.x} panY={pan.y} zoom={zoom}
+                  gxOffset={gxOffset} />
+              ))}
+
+              {/* Staircase connectors */}
+              {activeFloor === 'All' && bldgFloorsRange.length > 1 && bldgFloorsRange.slice(0, -1).map(fi => (
+                <IsoStaircase key={`stair-${bldgName}-${fi}`}
+                  fromElev={fi * FLOOR_LIFT_PX * zoom} toElev={(fi + 1) * FLOOR_LIFT_PX * zoom}
+                  gx={STAIR_GX} gy={STAIR_GY} tileW={tileW} tileH={tileH} wallH={wallH}
+                  panX={pan.x} panY={pan.y} />
+              ))}
+
+              {/* Elevator (per building) */}
+              {activeFloor === 'All' && hasElevator && bldgFloorsRange.length > 1 && (
+                <IsoElevator
+                  fromElev={bldgMinFloor * FLOOR_LIFT_PX * zoom} toElev={bldgMaxFloor * FLOOR_LIFT_PX * zoom}
+                  gx={ELEV_GX} gy={ELEV_GY} tileW={tileW} tileH={tileH} wallH={wallH}
+                  panX={pan.x} panY={pan.y} />
+              )}
+
+              {/* Room boxes for this building */}
+              {sortedRooms.map(room => {
+                const pos = layout[room.id];
+                if (!pos) return null;
+                const fi   = floorIdx(room.floor || 'Ground Floor');
+                const elev = fi * FLOOR_LIFT_PX * zoom;
+                const bp   = CAT_BP_COLOR[room.category] || CAT_BP_COLOR['Classroom'];
+                const dot  = room.status === 'Available' ? '#4ade80' : room.status === 'Occupied' ? '#f87171' : '#fb923c';
+                return (
+                  <IsoRoomBox key={room.id}
+                    gx={pos.gx} gy={pos.gy} gw={pos.gw} gh={pos.gh}
+                    wallH={wallH} floorElev={elev} tileW={tileW} tileH={tileH} panX={pan.x} panY={pan.y}
+                    faceColor={bp.fill} rightColor={bp.stroke + 'cc'} leftColor={bp.stroke + '88'} strokeColor={bp.stroke}
+                    isSelected={selected === room.id}
+                    onClick={() => { if (!isPanning.current) onRoomClick(room); }}
+                    onDragStart={e => onDragStart(e, room.id)}
+                    onResizeDrag={e => onResizeStart(e, room.id)}>
+                    <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: bp.label, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100 }}>{room.name}</div>
+                      <div style={{ fontSize: 7.5, color: bp.label, opacity: 0.65, marginTop: 1 }}>{room.category}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 2 }}>
+                        <div style={{ width: 5, height: 5, borderRadius: '50%', background: dot, flexShrink: 0 }} />
+                        <span style={{ fontSize: 7, color: bp.label, opacity: 0.55 }}>{room.status}</span>
+                      </div>
+                    </div>
+                  </IsoRoomBox>
+                );
+              })}
+            </g>
           );
         })}
       </svg>
@@ -920,9 +1041,16 @@ function RoomsModule({ notify }) {
   const [hasElevator, setHasElevator] = useState(false);
 
   useEffect(() => {
-    supabase.from('rooms').select('*').then(({ data }) => { setRooms(data || []); setLoading(false); });
-    supabase.from('schools').select('has_elevator').limit(1).maybeSingle()
-      .then(({ data }) => { if (data?.has_elevator) setHasElevator(true); });
+    supabase.from('rooms').select('*').then(({ data }) => {
+      const seen = new Set();
+      const unique = (data || []).filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true; });
+      setRooms(unique);
+      setLoading(false);
+    });
+    // Gracefully handle case where has_elevator column doesn't exist yet
+    supabase.from('schools').select('*').limit(1).maybeSingle()
+      .then(({ data, error }) => { if (!error && data?.has_elevator) setHasElevator(true); })
+      .catch(() => {});
   }, []);
 
   const filtered = rooms.filter(r => {
@@ -955,7 +1083,7 @@ function RoomsModule({ notify }) {
         notify(`Room add failed: ${error.message}`, 'danger');
         return;
       }
-      if (data) setRooms(p => [...p, data]);
+      if (data) setRooms(p => p.some(r => r.id === data.id) ? p : [...p, data]);
       notify('Room added.');
     } else {
       const { data, error } = await supabase.from('rooms').update({ ...form, capacity: +form.capacity, seats: +form.seats }).eq('id', form.id).select('*').maybeSingle();
@@ -1142,8 +1270,8 @@ function RoomsModule({ notify }) {
             <span style={{ fontSize: 11, color: '#aaa', fontStyle: 'italic' }}>Drag room to move · Resize corner dot · Click to view · Drag canvas to pan · Scroll to zoom</span>
           </div>
           {/* Canvas */}
-          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 860, borderRadius: 12 }}>
-            <BlueprintCanvas rooms={activeBuilding === 'All' ? rooms : rooms.filter(r => r.building === activeBuilding)} activeFloor={activeFloor} onRoomClick={setSelectedRoom} hasElevator={hasElevator} />
+          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 940, borderRadius: 12 }}>
+            <BlueprintCanvas rooms={rooms} activeFloor={activeFloor} onRoomClick={setSelectedRoom} hasElevator={hasElevator} />
           </div>
         </div>
       )}
