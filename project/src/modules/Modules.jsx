@@ -38,13 +38,15 @@ function useSupabaseQuery(table, select = '*', filter = null) {
 
 function AdminDashboard() {
   const { profile } = useAuth();
-  const { data: users } = useSupabaseQuery('profiles');
-  const { data: rooms } = useSupabaseQuery('rooms');
+  const schoolId = profile?.school_id;
+  // Scope all counts to this admin's school where possible
+  const { data: users } = useSupabaseQuery('profiles', '*', schoolId ? { school_id: schoolId } : null);
+  const { data: rooms } = useSupabaseQuery('rooms', '*', schoolId ? { school_id: schoolId } : null);
   const { data: applicants } = useSupabaseQuery('applicants');
   const { data: transactions } = useSupabaseQuery('book_transactions');
-  const { data: books } = useSupabaseQuery('books');
-  const { data: subjects } = useSupabaseQuery('subjects');
-  const { data: announcements } = useSupabaseQuery('announcements');
+  const { data: books } = useSupabaseQuery('books', '*', schoolId ? { school_id: schoolId } : null);
+  const { data: subjects } = useSupabaseQuery('subjects', '*', schoolId ? { school_id: schoolId } : null);
+  const { data: announcements } = useSupabaseQuery('announcements', '*', schoolId ? { school_id: schoolId } : null);
 
   const isTeacher = profile?.role === 'Teacher';
   const overdue = transactions.filter(t => t.status === 'Overdue').length;
@@ -270,10 +272,17 @@ function UsersModule({ notify }) {
   const [loading, setLoading] = useState(true);
   const [filterRole, setFilterRole] = useState("All");
   const [searchQ, setSearchQ] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // Fix #3
+  const [editUser, setEditUser] = useState(null);           // Fix #3/#18
+  const [editForm, setEditForm] = useState({});
 
   useEffect(() => {
-    supabase.from('profiles').select('*').then(({ data }) => { setUsers(data || []); setLoading(false); });
-  }, []);
+    // Fix #1: scope to school_id
+    const q = currentUser?.school_id
+      ? supabase.from('profiles').select('*').eq('school_id', currentUser.school_id)
+      : supabase.from('profiles').select('*');
+    q.then(({ data }) => { setUsers(data || []); setLoading(false); });
+  }, [currentUser?.school_id]);
 
   const filtered = users.filter(u => {
     const mr = filterRole === "All" || u.role === filterRole;
@@ -294,6 +303,27 @@ function UsersModule({ notify }) {
     await supabase.from('profiles').update({ status: next }).eq('id', id);
     setUsers(p => p.map(u => u.id === id ? { ...u, status: next } : u));
     notify("Status updated.");
+  };
+
+  // Fix #3: delete user profile row
+  const deleteUser = async (id) => {
+    const { error } = await supabase.from('profiles').delete().eq('id', id);
+    if (error) { notify("Delete failed: " + error.message, "danger"); return; }
+    setUsers(p => p.filter(u => u.id !== id));
+    setConfirmDelete(null);
+    notify("User removed.", "warning");
+  };
+
+  // Fix #3/#18: edit user course / year / section
+  const openEditUser = (u) => {
+    setEditUser(u);
+    setEditForm({ course: u.course || "", year: u.year || "1st Year", section: u.section || "None", role: u.role });
+  };
+  const saveEditUser = async () => {
+    const { data } = await supabase.from('profiles').update(editForm).eq('id', editUser.id).select().maybeSingle();
+    if (data) setUsers(p => p.map(u => u.id === data.id ? data : u));
+    setEditUser(null);
+    notify("User updated.");
   };
 
   return (
@@ -358,9 +388,15 @@ function UsersModule({ notify }) {
                     <td style={{ padding: "10px 12px", color: "#888", fontSize: 12 }}>{u.section || "—"}</td>
                     <td style={{ padding: "10px 12px", color: "#aaa", fontSize: 12 }}>{u.joined || "—"}</td>
                     <td style={{ padding: "10px 12px" }}>
-                      <button onClick={() => toggleStatus(u.id, u.status)} style={{ ...T.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>
-                        {u.status === "Active" ? "Suspend" : "Activate"}
-                      </button>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <button onClick={() => toggleStatus(u.id, u.status)} style={{ ...T.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>
+                          {u.status === "Active" ? "Suspend" : "Activate"}
+                        </button>
+                        <button onClick={() => openEditUser(u)} style={{ ...T.btn("ghost"), padding: "4px 10px", fontSize: 11 }}>Edit</button>
+                        {u.id !== currentUser?.id && (
+                          <button onClick={() => setConfirmDelete(u)} style={{ ...T.btn("danger"), padding: "4px 10px", fontSize: 11 }}>Del</button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -368,6 +404,45 @@ function UsersModule({ notify }) {
             </tbody>
           </table>
           {filtered.length === 0 && <p style={{ textAlign: "center", color: "#bbb", padding: "2rem", fontSize: 13 }}>No users match.</p>}
+          {/* Fix #3: Delete confirmation */}
+          {confirmDelete && (
+            <Confirm
+              msg={`Remove "${confirmDelete.name}" from the system? This deletes their profile row only.`}
+              onConfirm={() => deleteUser(confirmDelete.id)}
+              onCancel={() => setConfirmDelete(null)}
+            />
+          )}
+          {/* Fix #3/#18: Edit user modal */}
+          {editUser && (
+            <Modal title={`Edit: ${editUser.name}`} onClose={() => setEditUser(null)} width={400}>
+              <Field label="Role">
+                <select style={{ ...T.select, width: "100%" }} value={editForm.role} onChange={e => setEditForm(p => ({ ...p, role: e.target.value }))}>
+                  {ROLES.map(r => <option key={r}>{r}</option>)}
+                </select>
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="Course">
+                  <select style={{ ...T.select, width: "100%" }} value={editForm.course} onChange={e => setEditForm(p => ({ ...p, course: e.target.value }))}>
+                    {COURSES.map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </Field>
+                <Field label="Year">
+                  <select style={{ ...T.select, width: "100%" }} value={editForm.year} onChange={e => setEditForm(p => ({ ...p, year: e.target.value }))}>
+                    {YEAR_LEVELS.map(y => <option key={y}>{y}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Section">
+                <select style={{ ...T.select, width: "100%" }} value={editForm.section} onChange={e => setEditForm(p => ({ ...p, section: e.target.value }))}>
+                  {SECTIONS.map(s => <option key={s}>{s}</option>)}
+                </select>
+              </Field>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: "1rem" }}>
+                <button onClick={() => setEditUser(null)} style={T.btn("ghost")}>Cancel</button>
+                <button onClick={saveEditUser} style={T.btn("primary")}>Save</button>
+              </div>
+            </Modal>
+          )}
         </div>
       </div>
     </div>
@@ -1098,10 +1173,29 @@ function RoomsModule({ notify }) {
     setModal(null);
   };
 
+  // Fix #2: delete room
+  const [confirmDeleteRoom, setConfirmDeleteRoom] = useState(null);
+  const deleteRoom = async (id) => {
+    const { error } = await supabase.from('rooms').delete().eq('id', id);
+    if (error) { notify('Delete failed: ' + error.message, 'danger'); return; }
+    setRooms(p => p.filter(r => r.id !== id));
+    setConfirmDeleteRoom(null);
+    notify('Room deleted.', 'warning');
+  };
+
   const F = key => ({ value: form[key] ?? '', onChange: e => setForm(p => ({ ...p, [key]: e.target.value })) });
 
   return (
     <div>
+      {/* Fix #2: Delete room confirmation */}
+      {confirmDeleteRoom && (
+        <Confirm
+          msg={`Delete "${confirmDeleteRoom.name}"? This cannot be undone.`}
+          onConfirm={() => deleteRoom(confirmDeleteRoom.id)}
+          onCancel={() => setConfirmDeleteRoom(null)}
+        />
+      )}
+
       {/* Add/Edit Modal */}
       {modal && (
         <Modal title={modal === 'add' ? 'Add Room' : 'Edit Room'} onClose={() => setModal(null)}>
@@ -1233,7 +1327,10 @@ function RoomsModule({ notify }) {
                     </td>
                     <td style={{ padding: '10px 12px' }}><span style={T.pill(STATUS_STYLE[r.status].bg, STATUS_STYLE[r.status].color)}>{r.status}</span></td>
                     <td style={{ padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
-                      <button onClick={() => openEdit(r)} style={{ ...T.btn('ghost'), padding: '3px 8px', fontSize: 11 }}>Edit</button>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button onClick={() => openEdit(r)} style={{ ...T.btn('ghost'), padding: '3px 8px', fontSize: 11 }}>Edit</button>
+                        <button onClick={() => setConfirmDeleteRoom(r)} style={{ ...T.btn('danger'), padding: '3px 8px', fontSize: 11 }}>Del</button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1495,8 +1592,19 @@ function ScheduleModule({ notify }) {
     notify(`Dropped ${subject.code}`);
   };
 
+  // Fix #10: call conflict detection before saving
   const save = async () => {
     if (!form.code.trim() || !form.name.trim()) return;
+    const conflict = detectScheduleConflicts(subjects, {
+      id: form.id || null,
+      roomId: form.room_id,
+      teacherId: form.teacher_id,
+      day: form.day,
+      time: form.time_slot,
+      semester: form.semester,
+      academicYear: form.academic_year,
+    });
+    if (conflict) { notify(`Conflict: ${conflict.msg}`, "danger"); return; }
     if (modal === "add") {
       const { data } = await supabase.from('subjects').insert({ ...form, units: +form.units }).select().maybeSingle();
       if (data) setSubjects(p => [...p, data]);
@@ -1509,10 +1617,29 @@ function ScheduleModule({ notify }) {
     setModal(null);
   };
 
+  // Fix #4: delete subject
+  const [confirmDeleteSubject, setConfirmDeleteSubject] = useState(null);
+  const deleteSubject = async (id) => {
+    const { error } = await supabase.from('subjects').delete().eq('id', id);
+    if (error) { notify("Delete failed: " + error.message, "danger"); return; }
+    setSubjects(p => p.filter(s => s.id !== id));
+    setConfirmDeleteSubject(null);
+    notify("Subject deleted.", "warning");
+  };
+
   const F = (key) => ({ value: form[key] ?? "", onChange: e => setForm(p => ({ ...p, [key]: e.target.value })) });
 
   return (
     <div>
+      {/* Fix #4: Delete subject confirmation */}
+      {confirmDeleteSubject && (
+        <Confirm
+          msg={`Delete "${confirmDeleteSubject.code} — ${confirmDeleteSubject.name}"? Enrollments for this subject will also be removed.`}
+          onConfirm={() => deleteSubject(confirmDeleteSubject.id)}
+          onCancel={() => setConfirmDeleteSubject(null)}
+        />
+      )}
+
       {modal && (
         <Modal title={modal === "add" ? "Add Subject" : "Edit Subject"} onClose={() => setModal(null)} width={560}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1612,7 +1739,18 @@ function ScheduleModule({ notify }) {
             <div style={T.card}>
               <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, marginBottom: "0.75rem", color: "#1a1a2e" }}>Available Subjects</h3>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
-                {subjects.filter(s => s.section === currentUser?.section && !enrollments.some(e => e.student_id === currentUser.id && e.subject_id === s.id)).map(s => (
+                {/* Fix #11: show subjects for student's course+year, not just exact section */}
+                {subjects.filter(s => {
+                  const alreadyEnrolled = enrollments.some(e => e.student_id === currentUser.id && e.subject_id === s.id);
+                  if (alreadyEnrolled) return false;
+                  // If student has a section, match it; otherwise match course prefix + year
+                  if (currentUser?.section && currentUser.section !== "None" && currentUser.section !== "") {
+                    return s.section === currentUser.section;
+                  }
+                  // Fallback: match course prefix so unsectioned students see relevant subjects
+                  const coursePrefix = currentUser?.course?.slice(0, 4) || "";
+                  return s.section.startsWith(coursePrefix);
+                }).map(s => (
                   <div key={s.id} style={{ border: "1.5px solid #b5d4f4", borderRadius: 12, padding: "12px", background: "#eef4ff" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 8 }}>
                       <div><p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: "#1a1a2e" }}>{s.code}</p><p style={{ margin: "2px 0 0", fontSize: 12, color: "#666" }}>{s.name}</p></div>
@@ -1646,6 +1784,14 @@ function ScheduleModule({ notify }) {
                   <td style={{ padding: "10px 14px", color: "#888", fontSize: 12 }}>{s.day} · {s.time_slot}</td>
                   <td style={{ padding: "10px 14px", color: "#888", fontSize: 12 }}>{getRoom(s.room_id)}</td>
                   <td style={{ padding: "10px 14px" }}><span style={T.pill("#f5f4f0", "#555")}>{s.units} units</span></td>
+                  {isAdmin && (
+                    <td style={{ padding: "10px 14px" }}>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button onClick={() => { setForm({ ...s }); setModal("edit"); }} style={{ ...T.btn("ghost"), padding: "3px 8px", fontSize: 11 }}>Edit</button>
+                        <button onClick={() => setConfirmDeleteSubject(s)} style={{ ...T.btn("danger"), padding: "3px 8px", fontSize: 11 }}>Del</button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -1707,6 +1853,16 @@ function GradebookModule({ notify }) {
     }
     setModal(null);
     notify("Grade saved.");
+  };
+
+  // Fix #8: delete a grade entry
+  const [confirmDeleteGrade, setConfirmDeleteGrade] = useState(null);
+  const deleteGrade = async (gradeId) => {
+    const { error } = await supabase.from('grades').delete().eq('id', gradeId);
+    if (error) { notify("Delete failed: " + error.message, "danger"); return; }
+    setGrades(p => p.filter(g => g.id !== gradeId));
+    setConfirmDeleteGrade(null);
+    notify("Grade entry deleted.", "warning");
   };
 
   if (isStudent) {
@@ -1771,6 +1927,15 @@ function GradebookModule({ notify }) {
 
   return (
     <div>
+      {/* Fix #8: confirm delete grade */}
+      {confirmDeleteGrade && (
+        <Confirm
+          msg={`Delete grade entry for this student? This cannot be undone.`}
+          onConfirm={() => deleteGrade(confirmDeleteGrade.id)}
+          onCancel={() => setConfirmDeleteGrade(null)}
+        />
+      )}
+
       {modal === "grade" && (
         <Modal title="Enter / Update Grade" onClose={() => setModal(null)} width={440}>
           <Field label="Student"><select style={{ ...T.select, width: "100%" }} value={form.student_id} onChange={e => setForm(p => ({ ...p, student_id: e.target.value }))}><option value="">Select student</option>{sectionStudents.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
@@ -1814,7 +1979,7 @@ function GradebookModule({ notify }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid #f0efeb" }}>
-                      {["Student", ...GRADE_COMPONENTS, "Final Grade", "Remarks"].map(h => (
+                      {["Student", ...GRADE_COMPONENTS, "Final Grade", "Remarks", ...(isAdmin || isTeacher ? [""] : [])].map(h => (
                         <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#aaa", textTransform: "uppercase" }}>{h}</th>
                       ))}
                     </tr>
@@ -1831,9 +1996,15 @@ function GradebookModule({ notify }) {
                               {GRADE_COMPONENTS.map(c => <td key={c} style={{ padding: "10px 14px", color: "#555" }}>{g[c.toLowerCase()]}</td>)}
                               <td style={{ padding: "10px 14px" }}><span style={{ fontSize: 16, fontWeight: 700, color: gradeColor(avg) }}>{avg}</span></td>
                               <td style={{ padding: "10px 14px" }}><span style={T.pill(avg >= 75 ? "#eafaf1" : "#fff0f3", avg >= 75 ? "#1b4332" : "#7a1c2e")}>{g.remarks}</span></td>
+                          <td style={{ padding: "10px 14px" }}>
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <button onClick={() => { setForm({ student_id: stu.id, subject_id: activeSubject.id, quizzes: g.quizzes, activities: g.activities, midterm: g.midterm, finals: g.finals, remarks: g.remarks }); setModal("grade"); }} style={{ ...T.btn("ghost"), padding: "3px 8px", fontSize: 11 }}>Edit</button>
+                              <button onClick={() => setConfirmDeleteGrade(g)} style={{ ...T.btn("danger"), padding: "3px 8px", fontSize: 11 }}>Del</button>
+                            </div>
+                          </td>
                             </>
                           ) : (
-                            <td colSpan={5} style={{ padding: "10px 14px", color: "#ccc", fontSize: 12 }}>No grade yet</td>
+                            <td colSpan={6} style={{ padding: "10px 14px", color: "#ccc", fontSize: 12 }}>No grade yet</td>
                           )}
                         </tr>
                       );
@@ -2072,11 +2243,11 @@ function LibraryModule({ notify }) {
 
   const confirmBorrow = async () => {
     if (!borrowerId && !isStudent) return;
-    const bId = isStudent ? currentUser.id : parseInt(borrowerId);
+    const bId = isStudent ? currentUser.id : borrowerId;
     const borrower = (users || []).find(u => u.id === bId);
     const book = books.find(b => b.id === selectedBook.id);
     if (book.available <= 0) { notify("No copies available.", "danger"); return; }
-    const newTx = { book_id: book.id, borrower_id: bId, borrower_name: borrower?.name || currentUser.name, borrowed_date: today(), due_date: dueDate(dueDays), status: "Borrowed", fine: 0, fine_paid: false };
+    const newTx = { book_id: book.id, borrower_id: bId, borrower_name: borrower?.name || currentUser.name, borrow_date: today(), due_date: dueDate(dueDays), status: "Borrowed", fine: 0, fine_paid: false };
     const { data } = await supabase.from('book_transactions').insert(newTx).select().maybeSingle();
     if (data) setTransactions(p => [...p, data]);
     await supabase.from('books').update({ available: book.available - 1 }).eq('id', book.id);
@@ -2214,7 +2385,7 @@ function LibraryModule({ notify }) {
                   <tr key={tx.id} style={{ borderBottom: "1px solid #f9f8f5" }}>
                     <td style={{ padding: "10px 14px" }}><p style={{ margin: 0, fontWeight: 500 }}>{book?.title || "Unknown"}</p><p style={{ margin: 0, fontSize: 11, color: "#aaa" }}>{book?.author}</p></td>
                     {!isStudent && <td style={{ padding: "10px 14px", color: "#555" }}>{tx.borrower_name}</td>}
-                    <td style={{ padding: "10px 14px", color: "#aaa", fontSize: 12 }}>{tx.borrowed_date}</td>
+                    <td style={{ padding: "10px 14px", color: "#aaa", fontSize: 12 }}>{tx.borrow_date}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12, color: tx.status === "Overdue" ? "#e94560" : "#555", fontWeight: tx.status === "Overdue" ? 700 : 400 }}>{tx.due_date}</td>
                     <td style={{ padding: "10px 14px" }}><span style={T.pill(statusStyle.bg, statusStyle.color)}>{tx.status}</span></td>
                     <td style={{ padding: "10px 14px" }}>
@@ -2241,9 +2412,14 @@ function AnnouncementsModule({ notify }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ title: "", body: "", target: "All", pinned: false });
 
+  const { profile: _annUser } = useAuth();
   useEffect(() => {
-    supabase.from('announcements').select('*').then(({ data }) => { setAnnouncements(data || []); setLoading(false); });
-  }, []);
+    // Fix #14: scope announcements to school
+    const q = _annUser?.school_id
+      ? supabase.from('announcements').select('*').eq('school_id', _annUser.school_id)
+      : supabase.from('announcements').select('*');
+    q.then(({ data }) => { setAnnouncements(data || []); setLoading(false); });
+  }, [_annUser?.school_id]);
 
   const isAdmin = currentUser?.role === 'Admin';
   const isTeacher = currentUser?.role === 'Teacher';
@@ -2402,13 +2578,16 @@ function ProfileModule({ notify }) {
 // ─── SEARCH MODULE ────────────────────────────────────────────────────────────
 
 function SearchModule() {
+  const { profile: _searchUser } = useAuth();
+  const _sid = _searchUser?.school_id || null;
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
 
-  const { data: users } = useSupabaseQuery('profiles');
-  const { data: subjects } = useSupabaseQuery('subjects');
-  const { data: rooms } = useSupabaseQuery('rooms');
-  const { data: books } = useSupabaseQuery('books');
+  // Fix #17: scope search to school
+  const { data: users } = useSupabaseQuery('profiles', '*', _sid ? { school_id: _sid } : null);
+  const { data: subjects } = useSupabaseQuery('subjects', '*', _sid ? { school_id: _sid } : null);
+  const { data: rooms } = useSupabaseQuery('rooms', '*', _sid ? { school_id: _sid } : null);
+  const { data: books } = useSupabaseQuery('books', '*', _sid ? { school_id: _sid } : null);
 
   const userResults = q ? (users || []).filter(u => u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)) : [];
   const subjectResults = q ? (subjects || []).filter(s => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)) : [];

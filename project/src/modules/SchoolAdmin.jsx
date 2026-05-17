@@ -826,6 +826,7 @@ function RoomsTab({ schoolId, notify }){
   const [filterFloor, setFilterFloor]=useState('All');
   const [filterCat, setFilterCat]=useState('All');
   const [view, setView]=useState('3d');            // '3d' | 'list'
+  const [selectedBuilding, setSelectedBuilding]=useState('All'); // building filter for blueprint
 
   useEffect(()=>{ load(); },[]);
 
@@ -879,6 +880,23 @@ function RoomsTab({ schoolId, notify }){
   });
 
   const byCat=CATEGORIES.reduce((acc,c)=>({ ...acc,[c]:rooms.filter(r=>r.category===c).length }),{});
+
+  // All unique building names, sorted; 'Main Building' first
+  const allBuildings=[...new Set(rooms.map(r=>r.building||'Main Building'))].sort((a,b)=>{
+    if(a==='Main Building') return -1;
+    if(b==='Main Building') return 1;
+    return a.localeCompare(b);
+  });
+
+  // Rooms scoped to selected building for the 3D view
+  const blueprintRooms = selectedBuilding==='All' ? rooms : rooms.filter(r=>(r.building||'Main Building')===selectedBuilding);
+
+  // Per-building stats
+  const buildingStats = allBuildings.map(b => {
+    const bRooms = rooms.filter(r=>(r.building||'Main Building')===b);
+    const floors = [...new Set(bRooms.map(r=>r.floor||'Ground Floor'))];
+    return { name:b, count:bRooms.length, floors, available:bRooms.filter(r=>r.status==='Available').length };
+  });
 
   // ── Layout: left sidebar (form/panel) + right (3D or list) ──────────────────
   return (
@@ -945,28 +963,70 @@ function RoomsTab({ schoolId, notify }){
             </div>
           </div>
         ) : (
-          <div style={T.card}>
-            <h3 style={{ margin:'0 0 1rem', fontSize:14, fontWeight:700, color:'#1a1a2e' }}>Rooms Overview</h3>
-            {/* Category summary */}
-            <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:'1.25rem' }}>
-              {CATEGORIES.filter(c=>byCat[c]>0).map(c=>{
-                const meta=CAT_COLOR[c]||{ bg:'#f5f4f0', color:'#888', border:'#e8e6e0' };
-                return (
-                  <div key={c} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 10px', borderRadius:8, background:meta.bg, border:`1px solid ${meta.border}` }}>
-                    <span style={{ fontSize:13, color:meta.color, fontWeight:500 }}>{CAT_ICON[c]} {c}</span>
-                    <span style={{ fontSize:13, fontWeight:700, color:meta.color }}>{byCat[c]}</span>
-                  </div>
-                );
-              })}
-              {rooms.length===0&&<p style={{ color:'#aaa', fontSize:13 }}>No rooms yet. Click "Add Room" below.</p>}
+          <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+            {/* Buildings overview */}
+            <div style={T.card}>
+              <h3 style={{ margin:'0 0 0.85rem', fontSize:14, fontWeight:700, color:'#1a1a2e' }}>
+                🏛 All Buildings
+                <span style={{ marginLeft:8, fontSize:11, fontWeight:400, color:'#aaa' }}>{allBuildings.length} building{allBuildings.length!==1?'s':''}</span>
+              </h3>
+              {allBuildings.length===0 && <p style={{ color:'#aaa', fontSize:13 }}>No rooms yet. Click "Add Room" below.</p>}
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {buildingStats.map(b=>(
+                  <button key={b.name} onClick={()=>{ setSelectedBuilding(b.name); setView('3d'); }}
+                    style={{
+                      width:'100%', textAlign:'left', padding:'10px 12px', borderRadius:10, cursor:'pointer',
+                      border:`1.5px solid ${selectedBuilding===b.name?'#1a1a2e':'#e8e6e0'}`,
+                      background:selectedBuilding===b.name?'#1a1a2e':'#fafaf8',
+                      color:selectedBuilding===b.name?'#fff':'#1a1a2e',
+                      fontFamily:'inherit', transition:'all 0.15s',
+                    }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                      <span style={{ fontWeight:700, fontSize:13 }}>🏗 {b.name}</span>
+                      <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:12,
+                        background:selectedBuilding===b.name?'rgba(255,255,255,0.15)':'#eef4ff',
+                        color:selectedBuilding===b.name?'#fff':'#0f3460' }}>
+                        {b.count} room{b.count!==1?'s':''}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:11, marginTop:4, opacity:0.75 }}>
+                      {b.floors.length} floor{b.floors.length!==1?'s':''} · {b.available} available
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {allBuildings.length>1&&(
+                <button onClick={()=>setSelectedBuilding('All')} style={{
+                  width:'100%', marginTop:8, padding:'6px 12px', borderRadius:8, border:'1px dashed #e8e6e0',
+                  background:'transparent', color:'#aaa', fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                  outline:selectedBuilding==='All'?'2px solid #1a1a2e':'none',
+                }}>Show All Buildings Together</button>
+              )}
             </div>
+
+            {/* Category breakdown */}
+            <div style={T.card}>
+              <h3 style={{ margin:'0 0 0.85rem', fontSize:14, fontWeight:700, color:'#1a1a2e' }}>By Category</h3>
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {CATEGORIES.filter(c=>byCat[c]>0).map(c=>{
+                  const meta=CAT_COLOR[c]||{ bg:'#f5f4f0', color:'#888', border:'#e8e6e0' };
+                  return (
+                    <div key={c} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 10px', borderRadius:8, background:meta.bg, border:`1px solid ${meta.border}` }}>
+                      <span style={{ fontSize:13, color:meta.color, fontWeight:500 }}>{CAT_ICON[c]} {c}</span>
+                      <span style={{ fontSize:13, fontWeight:700, color:meta.color }}>{byCat[c]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             <button onClick={()=>setEditing('new')} style={{ ...T.btn('primary'), width:'100%' }}>+ Add Room</button>
           </div>
         )}
 
         {/* Quick-add if nothing selected/editing */}
         {!editing && !selected && rooms.length>0 && (
-          <button onClick={()=>setEditing('new')} style={{ ...T.btn('ghost'), width:'100%', marginTop:8, fontSize:12 }}>+ Add Room</button>
+          <button onClick={()=>setEditing('new')} style={{ ...T.btn('ghost'), width:'100%', marginTop:8, fontSize:12, display:'none' }}>+ Add Room</button>
         )}
       </div>
 
@@ -1001,9 +1061,57 @@ function RoomsTab({ schoolId, notify }){
 
         {view==='3d' ? (
           <div>
+            {/* Building tab strip */}
+            {allBuildings.length > 0 && (
+              <div style={{ display:'flex', gap:6, marginBottom:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
+                <span style={{ fontSize:11, fontWeight:700, color:'#aaa', textTransform:'uppercase', letterSpacing:'.07em', marginRight:2 }}>Building:</span>
+                {allBuildings.map(b=>(
+                  <button key={b} onClick={()=>setSelectedBuilding(b)}
+                    style={{
+                      padding:'5px 14px', borderRadius:20, border:`1.5px solid ${selectedBuilding===b?'#1a1a2e':'#e8e6e0'}`,
+                      background:selectedBuilding===b?'#1a1a2e':'#fff',
+                      color:selectedBuilding===b?'#fff':'#555',
+                      fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s',
+                    }}>
+                    🏗 {b}
+                    <span style={{ marginLeft:6, fontSize:10, opacity:0.7 }}>
+                      {rooms.filter(r=>(r.building||'Main Building')===b).length}
+                    </span>
+                  </button>
+                ))}
+                {allBuildings.length>1&&(
+                  <button onClick={()=>setSelectedBuilding('All')}
+                    style={{
+                      padding:'5px 14px', borderRadius:20, border:`1.5px solid ${selectedBuilding==='All'?'#1a1a2e':'#e8e6e0'}`,
+                      background:selectedBuilding==='All'?'#1a1a2e':'#fff',
+                      color:selectedBuilding==='All'?'#fff':'#555',
+                      fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s',
+                    }}>
+                    All Buildings
+                  </button>
+                )}
+              </div>
+            )}
+
             <div style={{ borderRadius:12, overflow:'hidden', border:'1px solid #e8e6e0', background:'#f5f4f0', marginBottom:8, position:'relative' }}>
+              {/* Building label header */}
+              {selectedBuilding !== 'All' && (
+                <div style={{ padding:'8px 16px', background:'#1a1a2e', color:'#fff', fontSize:12, fontWeight:700, letterSpacing:'.04em', display:'flex', alignItems:'center', gap:8 }}>
+                  <span>🏗</span>
+                  <span>{selectedBuilding}</span>
+                  <span style={{ fontSize:11, opacity:0.6, fontWeight:400, marginLeft:4 }}>
+                    · {blueprintRooms.length} room{blueprintRooms.length!==1?'s':''} · {[...new Set(blueprintRooms.map(r=>r.floor||'Ground Floor'))].length} floor{[...new Set(blueprintRooms.map(r=>r.floor||'Ground Floor'))].length!==1?'s':''}
+                  </span>
+                </div>
+              )}
               {loading ? (
                 <div style={{ height:420, display:'flex', alignItems:'center', justifyContent:'center', color:'#aaa', fontSize:13 }}>Loading rooms…</div>
+              ) : blueprintRooms.length===0 && selectedBuilding!=='All' ? (
+                <div style={{ height:420, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:'#aaa', fontSize:13, gap:12 }}>
+                  <div style={{ fontSize:32 }}>🏗</div>
+                  <div>No rooms in <strong>{selectedBuilding}</strong> yet.</div>
+                  <button onClick={()=>setEditing('new')} style={T.btn('primary')}>Add a room here</button>
+                </div>
               ) : rooms.length===0 ? (
                 <div style={{ height:420, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:'#aaa', fontSize:13, gap:12 }}>
                   <div style={{ fontSize:32 }}>🏗</div>
@@ -1012,7 +1120,7 @@ function RoomsTab({ schoolId, notify }){
                 </div>
               ) : (
                 <Blueprint3D
-                  rooms={rooms}
+                  rooms={blueprintRooms}
                   selectedId={selected?.id||null}
                   onSelect={r=>{ setSelected(r); setEditing(null); }}
                   hasElevator={hasElevator}

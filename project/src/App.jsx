@@ -12,7 +12,10 @@ import {
   ScheduleModule, GradebookModule, AttendanceModule,
   LibraryModule, AnnouncementsModule, ProfileModule, SearchModule,
 } from './modules/Modules';
-
+import {
+  ClearanceModule, FeesModule, DocumentRequestModule,
+  BulkImportModule, NoticeBoardModule,
+} from './modules/ExtraModules';
 const NAV = [
   { id: 'dashboard',     label: 'Dashboard',    icon: '⬡', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
   { id: 'users',         label: 'Users',         icon: '◈', roles: ['Admin'] },
@@ -27,6 +30,11 @@ const NAV = [
   { id: 'school',        label: 'My School',     icon: '🏫', roles: ['Admin'] },
   { id: 'directory',     label: 'Directory',     icon: '🌐', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
   { id: 'profile',       label: 'Profile',       icon: '◎', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
+  { id: 'clearance',   label: 'Clearance',    icon: '✔', roles: ['Admin', 'Student'] },
+  { id: 'fees',        label: 'Fees',          icon: '◈', roles: ['Admin', 'Student'] },
+  { id: 'docrequests', label: 'Doc Requests',  icon: '▣', roles: ['Admin', 'Student'] },
+  { id: 'bulkimport',  label: 'Bulk Import',   icon: '⬡', roles: ['Admin'] },
+  { id: 'notices',     label: 'Notice Board',  icon: '◉', roles: ['Admin', 'Teacher', 'Student', 'Applicant'] },
 ];
 
 function useIsMobile(breakpoint = 768) {
@@ -101,6 +109,11 @@ function AppShell() {
       case 'search':        return <SearchModule />;
       case 'school':        return <SchoolAdmin notify={notify} />;
       case 'profile':       return <ProfileModule notify={notify} />;
+      case 'clearance':   return <ClearanceModule notify={notify} />;
+      case 'fees':        return <FeesModule notify={notify} />;
+      case 'docrequests': return <DocumentRequestModule notify={notify} />;
+      case 'bulkimport':  return <BulkImportModule notify={notify} />;
+      case 'notices':     return <NoticeBoardModule notify={notify} />;
       case 'directory':
         return (
           <SchoolDirectory

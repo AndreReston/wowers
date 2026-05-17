@@ -18,6 +18,7 @@ export default function AuthScreen({ onBack }) {
     setLoading(true);
     try {
       await signIn(loginData.email, loginData.password);
+      if (onBack) onBack();
     } catch (e) {
       setError(e.message === "Invalid login credentials" ? "Invalid email or password." : e.message);
     }
@@ -51,6 +52,7 @@ export default function AuthScreen({ onBack }) {
           setError("Account created but profile setup failed: " + profileError.message);
         } else {
           await fetchProfile(authUser.id);
+          if (onBack) onBack();
         }
       }
     } catch (e) {
@@ -71,6 +73,7 @@ export default function AuthScreen({ onBack }) {
     setLoading(true);
     try {
       await signIn(d.email, d.password);
+      if (onBack) onBack();
     } catch (e) {
       setError(e.message === "Invalid login credentials" ? "Invalid email or password." : e.message);
     }
